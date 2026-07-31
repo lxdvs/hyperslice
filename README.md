@@ -130,6 +130,6 @@ does not yet reproduce every interactive overlay. Cubic and scattered interpolat
 deliberately not offered: they need explicit capability checks and valid local support.
 
 Next priorities are per-status-category legends and counts, provenance for interpolated
-support, Dask performance tuning, and capability-checked tensor-product cubic interpolation.
+support, and Dask performance tuning.
 Longer-term directions include linked profile/surface views, comparisons, animation,
 uncertainty and sensitivity maps, remote Zarr, workspaces, and plugin-based interpolation.

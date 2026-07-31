@@ -19,7 +19,7 @@ def test_cf_status_and_counts(dataset: xr.Dataset) -> None:
         selections=selections,
         method="exact",
     )
-    assert result.counts["missing"] > 0
+    assert result.counts["invalid"] > 0
     assert result.labels[3] == "physically invalid"
     assert parse_status_definition(dataset.status).valid_values == frozenset({0})
 

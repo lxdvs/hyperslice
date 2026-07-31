@@ -1,4 +1,5 @@
 .venv/
+.my__venv/
 __pycache__/
 .pytest_cache/
 .ruff_cache/
@@ -8,4 +9,3 @@ __pycache__/
 examples/data/*.nc
 examples/data/*.zarr/
 exports/
-

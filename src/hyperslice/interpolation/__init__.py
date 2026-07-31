@@ -1,6 +1,7 @@
 """Built-in slice evaluators."""
 
 from hyperslice.interpolation.base import Interpolator
+from hyperslice.interpolation.contour import linear_contour_surface
 from hyperslice.interpolation.exact import ExactGridInterpolator
 from hyperslice.interpolation.linear import LinearRectilinearInterpolator
 from hyperslice.interpolation.nearest import NearestInterpolator
@@ -10,4 +11,5 @@ __all__ = [
     "Interpolator",
     "LinearRectilinearInterpolator",
     "NearestInterpolator",
+    "linear_contour_surface",
 ]

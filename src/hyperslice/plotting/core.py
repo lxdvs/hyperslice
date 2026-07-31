@@ -8,6 +8,7 @@ import holoviews as hv
 import numpy as np
 import xarray as xr
 
+from hyperslice.interpolation import linear_contour_surface
 from hyperslice.schema import axis_label
 from hyperslice.status import SliceStatus
 
@@ -25,6 +26,8 @@ def build_plot(
     status: SliceStatus,
     show_samples: bool,
     show_invalid: bool,
+    pareto: bool = False,
+    pareto_value: float | None = None,
 ) -> Any:
     """Build the selected plot plus truthful sample/status overlays."""
     value_label = str(data.attrs.get("long_name", data.name or "Value"))
@@ -70,4 +73,22 @@ def build_plot(
             overlay *= hv.Points(
                 (xx[invalid], yy[invalid]), kdims=[x_dim, y_dim], label="Invalid samples"
             ).opts(marker="x", size=9, color="#d62728", line_width=3)
+    if pareto:
+        if pareto_value is None:
+            raise ValueError("A Pareto contour value is required.")
+        surface = linear_contour_surface(
+            data,
+            x_dim=x_dim,
+            y_dim=y_dim,
+            invalid_mask=status.mask_invalid,
+        )
+        interpolated_mesh = hv.QuadMesh(
+            surface,
+            kdims=[x_dim, y_dim],
+            vdims=vdims,
+        )
+        contour = hv.operation.contours(interpolated_mesh, levels=[pareto_value]).relabel(
+            f"Pareto: {pareto_value:g}"
+        )
+        overlay *= contour.opts(color="#ff3b30", line_width=3, tools=["hover"])
     return overlay

@@ -42,7 +42,7 @@ class SliceStatus:
 
 def parse_status_definition(status: xr.DataArray) -> StatusDefinition:
     """Parse CF flag metadata, accepting an explicit ``valid_values`` attribute."""
-    raw_values = status.attrs.get("flag_values", [])
+    raw_values = np.atleast_1d(status.attrs.get("flag_values", []))
     raw_meanings = str(status.attrs.get("flag_meanings", "")).split()
     labels = {
         int(value): meaning.replace("_", " ")
@@ -122,8 +122,11 @@ def classify_slice(
             validity, output, x_dim=x_dim, y_dim=y_dim, selections=selections, method=method
         )
         semantic_valid = semantic_valid & aligned_validity.astype(bool)
+    # A nonvalid status remains semantically invalid even when the response is NaN.
+    # Reserve "missing" for absent output whose status otherwise says it is valid.
     valid = semantic_valid & ~missing
-    invalid = ~semantic_valid & ~missing
+    invalid = ~semantic_valid
+    missing = missing & semantic_valid
     return SliceStatus(valid, invalid, missing, labels, aligned_status)
 
 
