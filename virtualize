@@ -1,0 +1,80 @@
+#!/bin/bash
+
+# Run this using "source virtualize"
+
+if [[ -z "$BASH_SOURCE" || "$BASH_SOURCE" == "$0" ]]; then
+  echo 'This is not runnable; use `source virtualize`'
+  exit
+fi
+
+if [ ! -d ".git" ]; then
+  if [ "`git rev-parse --show-toplevel`" == "" ]; then
+    echo "You're not even in a git repo!"
+    return
+  fi
+  echo "virtualize must be run from the root of the repo."
+  echo "Going there now."
+  cd `git rev-parse --show-toplevel`
+fi
+
+export VENV_PATH=".my_`git config --local remote.origin.url|sed -n 's#.*/\([^.]*\)\.git#\1#p'`_venv"
+
+mk_venv () {
+  echo 
+  echo "Creating Virtual Environment $VENV_PATH"
+  echo "..."
+  echo
+  python3 -m venv "$VENV_PATH"
+  if [ ! -d ${VENV_PATH} ]; then
+    echo "Failed creating virtual environment."
+  return
+  fi
+  cat << "EOF"
+Creation successful.
+
+Now would be a good time to fetch dependencies this project needs. Examples:
+pip install -r requirements.txt
+pip install -e .
+
+EOF
+}
+
+if [ "--remake" = "$1" ]||[ "-r" = "$1" ]; then
+  echo 'Reinitializing virtual environment'
+  rm -rf $VENV_PATH
+  mk_venv
+else
+  if [ -n "$VIRTUAL_ENV" ]; then
+    if [ "$PWD/$VENV_PATH" == "$VIRTUAL_ENV" ]; then
+      echo "Virtual Evironment $VENV_PATH already active."
+      echo 'Reinitialize this environment with -r or --remake if necessary.'
+      return
+    fi
+    echo "Exiting current alien environment $VIRTUAL_ENV"
+    deactivate
+  fi
+fi
+
+if [ ! command -v python3 2>/dev/null ]; then
+  echo "Check failed for Python3"
+  return
+fi
+
+if [ ! -d ${VENV_PATH} ]; then
+  echo "No Virtual Evironment directory found..."
+  mk_venv
+fi
+
+echo "Activating Virtual Environment '$VENV_PATH' ..."
+source $VENV_PATH/bin/activate
+if [ "$PWD/$VENV_PATH" != "$VIRTUAL_ENV" ]; then
+  echo "Activation failed."
+  echo 'Reinitialize this environment with `source virtualize -r`'
+  return
+else
+  echo "Activation successful."
+fi
+cat << "EOF"
+Reinitialize this environment with -r or --remake if necessary.
+to exit this virtual environment, use `deactivate`        
+EOF
