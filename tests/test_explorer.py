@@ -34,6 +34,14 @@ def test_plot_updates(dataset: xr.Dataset) -> None:
     assert explorer._plot.object is not old
 
 
+@pytest.mark.parametrize("plot_type", ["heatmap", "filled contour", "contour lines", "image"])
+def test_every_plot_type_renders_without_error(dataset: xr.Dataset, plot_type: str) -> None:
+    explorer = Explorer(dataset)
+    explorer.plot_type_widget.value = plot_type
+    assert explorer._plot.object is not None
+    assert explorer._message.alert_type != "danger"
+
+
 def test_axis_checkbox_matrix_is_synchronized(dataset: xr.Dataset) -> None:
     explorer = Explorer(dataset)
     assert set(explorer._axis_x_checks) == set(dataset[explorer.variable].dims)

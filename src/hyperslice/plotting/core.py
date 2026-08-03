@@ -8,6 +8,7 @@ import holoviews as hv
 import numpy as np
 import xarray as xr
 
+from hyperslice.colors import BLUE_PURPLE_RED
 from hyperslice.interpolation import linear_contour_surface
 from hyperslice.schema import axis_label
 from hyperslice.status import SliceStatus
@@ -41,7 +42,7 @@ def build_plot(
     image = hv.QuadMesh(data, kdims=[x_dim, y_dim], vdims=vdims)
     common = dict(
         colorbar=True,
-        cmap="Viridis",
+        cmap=BLUE_PURPLE_RED,
         responsive=True,
         height=570,
         title=title,
@@ -54,7 +55,8 @@ def build_plot(
     elif plot_type == "filled contour":
         base = hv.operation.contours(image, filled=True).opts(**common)
     else:
-        base = hv.operation.contours(image, filled=False).opts(**common, colorbar=False)
+        line_options = common | {"colorbar": False}
+        base = hv.operation.contours(image, filled=False).opts(**line_options)
     overlay = base
     xx, yy = np.meshgrid(data.coords[x_dim].values, data.coords[y_dim].values)
     if show_samples:

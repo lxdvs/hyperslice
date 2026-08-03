@@ -10,6 +10,7 @@ import pandas as pd
 import xarray as xr
 
 from hyperslice._version import __version__
+from hyperslice.colors import BLUE_PURPLE_RED_ANCHORS
 
 
 def slice_dataframe(
@@ -75,6 +76,7 @@ def _save_png_headless(plot: Any, target: Path) -> None:
     """Render the primary QuadMesh when no browser driver is available."""
     import holoviews as hv
     import matplotlib.pyplot as plt
+    from matplotlib.colors import LinearSegmentedColormap
 
     meshes = plot.traverse(lambda item: item, specs=[hv.QuadMesh])
     if not meshes:
@@ -88,7 +90,8 @@ def _save_png_headless(plot: Any, target: Path) -> None:
         mesh.dimension_values(value_dim, flat=False),
     )
     figure, axes = plt.subplots(figsize=(10, 7), constrained_layout=True)
-    artist = axes.pcolormesh(x, y, values, shading="auto", cmap="viridis")
+    colors = LinearSegmentedColormap.from_list("blue_purple_red", BLUE_PURPLE_RED_ANCHORS)
+    artist = axes.pcolormesh(x, y, values, shading="auto", cmap=colors)
     axes.set_xlabel(x_dim.label)
     axes.set_ylabel(y_dim.label)
     axes.set_title(str(mesh.opts.get(backend="bokeh", defaults=False).kwargs.get("title", "")))
