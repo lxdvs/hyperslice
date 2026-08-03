@@ -8,7 +8,7 @@ import xarray as xr
 from hyperslice import Explorer
 from hyperslice.colors import BLUE_PURPLE_RED
 from hyperslice.explorer import TAB_STYLES
-from hyperslice.filtering import CONTINUOUS_COLOR, FilterView
+from hyperslice.filtering import CONTINUOUS_COLOR, TICK_LIMIT, FilterView, tick_stylesheet
 from hyperslice.schema import inspect_dataset
 
 
@@ -232,7 +232,9 @@ def test_high_cardinality_outputs_are_styled_green() -> None:
         coords={"a": [0, 1], "b": [1, 2, 3]},
     )
     plain = FilterView(bucketed, inspect_dataset(bucketed))
-    assert not plain._filter_widgets["repeated"].stylesheets
+    assert all(
+        CONTINUOUS_COLOR not in sheet for sheet in plain._filter_widgets["repeated"].stylesheets
+    )
 
 
 def test_z_variable_widget_offers_inputs_and_outputs() -> None:
@@ -266,3 +268,40 @@ def test_plots_use_the_blue_purple_red_ramp() -> None:
     assert palette[0] == "#0000ff"
     assert palette[len(palette) // 2] == "#80007f"
     assert palette[-1] == "#ff0000"
+
+
+def test_tick_stylesheet_marks_each_distinct_value() -> None:
+    css = tick_stylesheet(np.array([0.0, 5.0, 5.0, 10.0]), 0.0, 10.0)
+    assert css is not None
+    assert "0.000% 0" in css
+    assert "50.000% 0" in css
+    assert "100.000% 0" in css
+    assert css.count("linear-gradient") == 3
+    assert "pointer-events: none" in css
+
+
+def test_tick_stylesheet_skips_degenerate_and_dense_fields() -> None:
+    assert tick_stylesheet(np.array([4.0, 4.0]), 4.0, 5.0) is None
+    assert tick_stylesheet(np.array([np.nan, np.nan]), 0.0, 1.0) is None
+    assert tick_stylesheet(np.arange(TICK_LIMIT + 1, dtype=float), 0.0, float(TICK_LIMIT)) is None
+    assert tick_stylesheet(np.array([1.0, 2.0]), 2.0, 2.0) is None
+
+
+def test_filter_sliders_carry_data_ticklines(dataset: xr.Dataset) -> None:
+    view = FilterView(dataset, inspect_dataset(dataset))
+    frame = view._sample_frame()
+    for name, widget in view._filter_widgets.items():
+        if not isinstance(widget, pn.widgets.RangeSlider):
+            continue
+        values = np.asarray(frame[name].to_numpy(), dtype=float)
+        distinct = np.unique(values[np.isfinite(values)])
+        tick_sheets = [sheet for sheet in widget.stylesheets if ".noUi-base::after" in sheet]
+        if 2 <= distinct.size <= TICK_LIMIT:
+            assert len(tick_sheets) == 1
+            span = widget.end - widget.start
+            first = (distinct[0] - widget.start) / span * 100.0
+            last = (distinct[-1] - widget.start) / span * 100.0
+            assert f"{first:.3f}% 0" in tick_sheets[0]
+            assert f"{last:.3f}% 0" in tick_sheets[0]
+        else:
+            assert not tick_sheets

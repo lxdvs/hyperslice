@@ -22,6 +22,46 @@ label, .bk-slider-title, .bk-input-group label {{
 }}
 """
 
+#: Most distinct values a slider will mark with data ticklines; anything denser
+#: would render as a solid bar rather than readable marks.
+TICK_LIMIT = 160
+TICK_COLOR = "#8b9aa9"
+
+
+def tick_stylesheet(values: Any, start: float, end: float) -> str | None:
+    """CSS drawing a tickline under a slider track at each distinct data value.
+
+    Positions are percentages of the slider's ``start``-``end`` span, painted
+    as stacked one-pixel background gradients on a pseudo-element so they never
+    intercept pointer events or get hidden behind the selected-range bar.
+    """
+    finite = np.asarray(values, dtype=float)
+    distinct = np.unique(finite[np.isfinite(finite)])
+    if distinct.size < 2 or distinct.size > TICK_LIMIT or end <= start:
+        return None
+    positions = (distinct - start) / (end - start) * 100.0
+    layers = ", ".join(f"linear-gradient({TICK_COLOR}, {TICK_COLOR})" for _ in positions)
+    offsets = ", ".join(f"{position:.3f}% 0" for position in positions)
+    sizes = ", ".join("1px 100%" for _ in positions)
+    return f"""
+.noUi-base::after {{
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -6px;
+  height: 5px;
+  background-image: {layers};
+  background-position: {offsets};
+  background-size: {sizes};
+  background-repeat: no-repeat;
+  pointer-events: none;
+}}
+.noUi-target {{
+  margin-bottom: 10px;
+}}
+"""
+
 
 class FilterView:
     """Project every sample onto two axes and outline samples outside active ranges."""
@@ -331,6 +371,10 @@ class FilterView:
             if selected[0] > selected[1]:
                 selected = (low, high)
             slider_end = high if high > low else low + step
+            slider_styles = [CONTINUOUS_STYLESHEET] if self._is_continuous(name) else []
+            ticks = tick_stylesheet(values, low, slider_end)
+            if ticks:
+                slider_styles.append(ticks)
             widget = pn.widgets.RangeSlider(
                 name=label,
                 start=low,
@@ -339,7 +383,7 @@ class FilterView:
                 step=step,
                 sizing_mode="stretch_width",
                 disabled=missing_count == len(values),
-                **styling,
+                stylesheets=slider_styles,
             )
             widget.param.watch(lambda _event: self._update(), "value")
             widgets[name] = widget
