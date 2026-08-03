@@ -66,6 +66,7 @@ module = [
   "hyperslice.cli",
   "hyperslice.explorer",
   "hyperslice.export",
+  "hyperslice.filtering",
   "hyperslice.loading",
   "hyperslice.schema",
   "hyperslice.slicing",

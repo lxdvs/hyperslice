@@ -12,8 +12,9 @@ import numpy as np
 import panel as pn
 import xarray as xr
 
-from hyperslice.exceptions import SliceError
+from hyperslice.exceptions import DatasetSchemaError, SliceError
 from hyperslice.export import bytes_io, csv_bytes, netcdf_bytes, save_png
+from hyperslice.filtering import FilterView
 from hyperslice.loading import DatasetSource, load_dataset
 from hyperslice.plotting import build_plot
 from hyperslice.schema import DatasetSchema, inspect_dataset
@@ -22,6 +23,48 @@ from hyperslice.status import SliceStatus, apply_strict_validity, classify_slice
 
 LOGGER = logging.getLogger(__name__)
 pn.extension(sizing_mode="stretch_width")
+
+TAB_STYLES = """
+:host {
+  --hyperslice-navy: #17324d;
+  --hyperslice-blue: #2d6f9f;
+  --hyperslice-surface: #f4f7fa;
+}
+.bk-header {
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+  padding: 10px 16px 0 16px;
+  background: rgba(244, 247, 250, 0.97);
+  border-bottom: 1px solid #cbd6df;
+  box-shadow: 0 3px 10px rgba(23, 50, 77, 0.12);
+  backdrop-filter: blur(8px);
+}
+.bk-headers-wrapper {
+  gap: 6px;
+}
+.bk-tab {
+  min-width: 120px;
+  padding: 10px 20px;
+  border: 1px solid transparent;
+  border-radius: 8px 8px 0 0;
+  color: #536878;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  transition: color 120ms ease, background-color 120ms ease,
+              border-color 120ms ease;
+}
+.bk-tab:hover {
+  color: var(--hyperslice-navy);
+  background: #e5edf4;
+}
+.bk-tab.bk-active {
+  color: white;
+  background: var(--hyperslice-blue);
+  border-color: var(--hyperslice-blue);
+}
+"""
 
 
 class Explorer:
@@ -43,22 +86,31 @@ class Explorer:
         self.schema: DatasetSchema = inspect_dataset(self.dataset)
         self.status_variable = status_variable or self._default_status()
         self.validity_variable = validity_variable
-        variables = list(self.schema.variables)
+        variables = [
+            name for name, info in self.schema.variables.items() if not info.constant
+        ] or list(self.schema.variables)
         variable = default_variable if default_variable in variables else variables[0]
-        dims = list(self.schema.variables[variable].dims)
-        x_dim = default_x if default_x in dims else dims[-1]
+        axis_dims = self._axis_dimensions(variable)
+        if len(axis_dims) < 2:
+            raise DatasetSchemaError(
+                f"Variable '{variable}' needs at least two numeric dimensions "
+                "for a two-dimensional slice."
+            )
+        x_dim = default_x if default_x in axis_dims else axis_dims[-1]
         y_dim = (
             default_y
-            if default_y in dims and default_y != x_dim
-            else next(dim for dim in reversed(dims) if dim != x_dim)
+            if default_y in axis_dims and default_y != x_dim
+            else next(dim for dim in reversed(axis_dims) if dim != x_dim)
         )
         self._selections: dict[str, Any] = {}
         self.variable_widget = pn.widgets.Select(
             name="Output variable", options=variables, value=variable
         )
-        self.x_widget = pn.widgets.Select(name="X axis", options=dims, value=x_dim)
+        self.x_widget = pn.widgets.Select(name="X axis", options=axis_dims, value=x_dim)
         self.y_widget = pn.widgets.Select(
-            name="Y axis", options=[d for d in dims if d != x_dim], value=y_dim
+            name="Y axis",
+            options=[dim for dim in axis_dims if dim != x_dim],
+            value=y_dim,
         )
         self.method_widget = pn.widgets.Select(
             name="Slicing method", options=["exact", "nearest", "linear"], value=initial_method
@@ -99,10 +151,29 @@ class Explorer:
         self._rebuild_dimension_widgets()
         self._rebuild_axis_matrix()
         self._update()
-        self.view = self._build_view()
+        self.slicer_view = self._build_view()
+        self.filter_view = FilterView(self.dataset, self.schema)
+        self.view = pn.Tabs(
+            ("Filter", self.filter_view.view),
+            ("Slicer", self.slicer_view),
+            active=0,
+            stylesheets=[TAB_STYLES],
+            sizing_mode="stretch_both",
+        )
 
     def _default_status(self) -> str | None:
         return self.schema.status_candidates[0] if self.schema.status_candidates else None
+
+    def _axis_dimensions(self, variable: str | None = None) -> list[str]:
+        """Return dimensions suitable for continuous two-dimensional plots."""
+        selected = variable or self.variable
+        continuous = [
+            dim
+            for dim in self.schema.variables[selected].dims
+            if not self.schema.coordinates[dim].categorical
+        ]
+        varying = [dim for dim in continuous if not self.schema.coordinates[dim].constant]
+        return varying if len(varying) >= 2 else continuous
 
     @property
     def variable(self) -> str:
@@ -143,7 +214,14 @@ class Explorer:
             self._update()
 
     def _on_variable(self, _event: Any) -> None:
-        dims = list(self.schema.variables[self.variable].dims)
+        dims = self._axis_dimensions()
+        if len(dims) < 2:
+            self._message.object = (
+                f"Variable '{self.variable}' has fewer than two numeric dimensions."
+            )
+            self._message.alert_type = "danger"
+            self._message.visible = True
+            return
         self.x_widget.options = dims
         if self.x_dim not in dims:
             self.x_widget.value = dims[-1]
@@ -155,7 +233,7 @@ class Explorer:
         self._update()
 
     def _on_x(self, _event: Any) -> None:
-        dims = list(self.schema.variables[self.variable].dims)
+        dims = self._axis_dimensions()
         self.y_widget.options = [dim for dim in dims if dim != self.x_dim]
         if self.y_dim == self.x_dim or self.y_dim not in self.y_widget.options:
             self.y_widget.value = self.y_widget.options[-1]
@@ -252,10 +330,10 @@ class Explorer:
         try:
             for dim, checkbox in self._axis_x_checks.items():
                 checkbox.value = dim == self.x_dim
-                checkbox.disabled = dim == self.y_dim
+                checkbox.disabled = self.schema.coordinates[dim].categorical or dim == self.y_dim
             for dim, checkbox in self._axis_y_checks.items():
                 checkbox.value = dim == self.y_dim
-                checkbox.disabled = dim == self.x_dim
+                checkbox.disabled = self.schema.coordinates[dim].categorical or dim == self.x_dim
         finally:
             self._syncing_axis_matrix = False
 
@@ -280,7 +358,12 @@ class Explorer:
         }
         for widget in self._dimension_widgets.values():
             widget.param.watch(lambda _event: self._update(), "value")
-        self._dimension_box.objects = list(self._dimension_widgets.values())
+        # Constant dimensions still pin the slice, but a one-option slicer is noise.
+        self._dimension_box.objects = [
+            widget
+            for dim, widget in self._dimension_widgets.items()
+            if not self.schema.coordinates[dim].constant
+        ]
 
     def _status_data(self) -> xr.DataArray | None:
         return self.dataset[self.status_variable] if self.status_variable else None
