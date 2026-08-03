@@ -48,6 +48,49 @@ state = explorer.get_state()
 explorer.set_state(state)
 ```
 
+## Building datasets incrementally
+
+`DatasetBuilder` creates xarray-compatible rectilinear datasets from individual
+design-point results:
+
+```python
+from hyperslice import DatasetBuilder
+
+builder = DatasetBuilder(
+    coordinate_attrs={
+        "temperature": {"long_name": "Temperature", "units": "K"},
+        "configuration": {"long_name": "Design configuration"},
+    },
+    variable_attrs={
+        "efficiency": {"long_name": "Efficiency", "units": "1"},
+        "margin": {"long_name": "Safety margin", "units": "MPa"},
+    },
+    attrs={"title": "Parameter sweep"},
+)
+
+point = {"temperature": 600.0, "configuration": "baseline"}
+builder.add_point(point, {"efficiency": 0.81})
+builder.add_point(point, {"margin": 2.4})  # additive for the same point
+
+builder.add_point(
+    {"temperature": 750.0, "configuration": "reinforced"},
+    {"efficiency": 0.84, "margin": 3.1},
+)
+
+dataset = builder.to_dataset()
+builder.write("sweep.nc")
+builder.write("sweep.zarr")
+```
+
+Every input dictionary must contain exactly the same keys. Reusing an input
+point is allowed only to add new output names; attempting to overwrite an
+output already stored at that point raises `OutputOverwriteError`. The
+Cartesian product of observed coordinate levels becomes the dataset grid, and
+unsupplied combinations or point-specific outputs remain `NaN`. Inputs with
+one identical value across every design point are removed from the dimensional
+grid and retained as scalar coordinates, preserving their provenance without
+creating singleton controls or axes.
+
 ## Supported data model
 
 Every dimension must have an independent one-dimensional coordinate. Coordinates may
