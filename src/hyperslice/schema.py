@@ -23,6 +23,8 @@ class CoordinateInfo:
     monotonic: bool
     unique: bool
     categorical: bool
+    constant: bool
+    constant_value: Any | None
 
 
 @dataclass(frozen=True)
@@ -36,6 +38,11 @@ class VariableInfo:
     units: str | None
     long_name: str
     fill_value: Any | None
+    constant: bool
+    constant_value: Any | None
+    distinct_count: int
+    distinct_ratio: float
+    high_cardinality: bool
 
 
 @dataclass(frozen=True)
@@ -56,6 +63,40 @@ def _monotonic(values: np.ndarray) -> bool:
         return bool(np.all(delta > 0) or np.all(delta < 0))
     except (TypeError, ValueError):
         return False
+
+
+#: Distinct-to-present ratio at or above which a variable counts as high-cardinality:
+#: its values are essentially all independent rather than falling into shared levels.
+HIGH_CARDINALITY_RATIO = 0.9
+
+
+def _cardinality(values: np.ndarray) -> tuple[int, float, bool]:
+    """Report distinct value count, distinct ratio, and the high-cardinality flag."""
+    flat = np.asarray(values).reshape(-1)
+    present = flat[np.isfinite(flat)] if flat.dtype.kind in "fc" else flat
+    if present.size == 0:
+        return 0, 0.0, False
+    distinct = int(np.unique(present).size)
+    ratio = distinct / present.size
+    return distinct, ratio, distinct > 1 and ratio >= HIGH_CARDINALITY_RATIO
+
+
+def _constant_summary(values: np.ndarray) -> tuple[bool, Any]:
+    """Report whether *values* never vary, and the single value if so.
+
+    A field with gaps is not constant even when its present values agree: the
+    presence pattern itself is something the user can filter on. A field that is
+    entirely missing is not constant either, since it has no value to report.
+    """
+    flat = np.asarray(values).reshape(-1)
+    present = flat[np.isfinite(flat)] if flat.dtype.kind in "fc" else flat
+    if present.size == 0 or present.size != flat.size:
+        return False, None
+    distinct = np.unique(present)
+    if distinct.size != 1:
+        return False, None
+    single = distinct[0]
+    return True, single.item() if hasattr(single, "item") else single
 
 
 def inspect_dataset(dataset: xr.Dataset) -> DatasetSchema:
@@ -83,6 +124,8 @@ def inspect_dataset(dataset: xr.Dataset) -> DatasetSchema:
             monotonic=_monotonic(values) if not categorical else False,
             unique=unique,
             categorical=categorical,
+            constant=size == 1,
+            constant_value=values[0].item() if size == 1 and hasattr(values[0], "item") else None,
         )
     variables: dict[str, VariableInfo] = {}
     statuses: list[str] = []
@@ -98,6 +141,9 @@ def inspect_dataset(dataset: xr.Dataset) -> DatasetSchema:
             statuses.append(name)
         if data.dtype.kind not in "iufc" or data.ndim < 2 or is_flag:
             continue
+        values = np.asarray(data.values)
+        constant, constant_value = _constant_summary(values)
+        distinct_count, distinct_ratio, high_cardinality = _cardinality(values)
         variables[name] = VariableInfo(
             name=name,
             dims=tuple(data.dims),
@@ -106,6 +152,11 @@ def inspect_dataset(dataset: xr.Dataset) -> DatasetSchema:
             units=attrs.get("units"),
             long_name=str(attrs.get("long_name", name.replace("_", " ").title())),
             fill_value=attrs.get("_FillValue", attrs.get("missing_value")),
+            constant=constant,
+            constant_value=constant_value,
+            distinct_count=distinct_count,
+            distinct_ratio=distinct_ratio,
+            high_cardinality=high_cardinality,
         )
     if not variables:
         raise DatasetSchemaError(
