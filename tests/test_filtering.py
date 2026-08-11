@@ -4,11 +4,19 @@ import holoviews as hv
 import numpy as np
 import panel as pn
 import xarray as xr
+from conftest import drag
 
 from hyperslice import Explorer
-from hyperslice.colors import BLUE_PURPLE_RED
+from hyperslice.colors import VIRIDIS
 from hyperslice.explorer import TAB_STYLES
-from hyperslice.filtering import CONTINUOUS_COLOR, TICK_LIMIT, FilterView, tick_stylesheet
+from hyperslice.filtering import (
+    CONTINUOUS_COLOR,
+    CONTINUOUS_MARKER,
+    PLAIN_MARKER,
+    TICK_LIMIT,
+    FilterView,
+    tick_stylesheet,
+)
 from hyperslice.schema import inspect_dataset
 
 
@@ -43,7 +51,7 @@ def test_range_filter_outlines_points_without_removing_them(dataset: xr.Dataset)
     frame = view._sample_frame()
     widget = view._filter_widgets["fuel_temperature"]
     midpoint = (widget.start + widget.end) / 2
-    widget.value = (widget.start, midpoint)
+    drag(widget, (widget.start, midpoint))
 
     points = view._plot.object.traverse(lambda element: element, specs=[hv.Points])
     assert len(points) == 2
@@ -64,7 +72,7 @@ def test_nonmatching_points_can_be_hidden(dataset: xr.Dataset) -> None:
     view = FilterView(dataset, inspect_dataset(dataset))
     frame = view._sample_frame()
     widget = view._filter_widgets["fuel_temperature"]
-    widget.value = (widget.start, (widget.start + widget.end) / 2)
+    drag(widget, (widget.start, (widget.start + widget.end) / 2))
     view.nonmatching_widget.value = "Hide"
 
     points = view._plot.object.traverse(lambda element: element, specs=[hv.Points])
@@ -87,7 +95,7 @@ def test_filter_axis_checkbox_matrix_updates_projection(dataset: xr.Dataset) -> 
 def test_filter_allows_output_variables_on_axes(dataset: xr.Dataset) -> None:
     view = FilterView(dataset, inspect_dataset(dataset))
     output_axis = next(name for name in view._compatible_outputs() if name != view.variable)
-    assert output_axis in view.x_widget.options
+    assert output_axis in view.x_widget.options.values()
     assert output_axis in view._axis_x_checks
     view._axis_x_checks[output_axis].value = True
     assert view.x_dim == output_axis
@@ -241,8 +249,9 @@ def test_z_variable_widget_offers_inputs_and_outputs() -> None:
     dataset = _constant_field_dataset()
     view = FilterView(dataset, inspect_dataset(dataset))
     assert view.variable_widget.name == "Z variable"
-    assert {"a", "b"}.issubset(set(view.variable_widget.options))
-    assert {"varies", "also_varies"}.issubset(set(view.variable_widget.options))
+    offered = set(view.variable_widget.options.values())
+    assert {"a", "b"}.issubset(offered)
+    assert {"varies", "also_varies"}.issubset(offered)
 
 
 def test_input_coordinate_can_colour_the_cloud() -> None:
@@ -259,15 +268,14 @@ def test_input_coordinate_can_colour_the_cloud() -> None:
     assert set(view._filter_widgets) == {"a", "b", "varies", "also_varies"}
 
 
-def test_plots_use_the_blue_purple_red_ramp() -> None:
+def test_plots_use_the_viridis_ramp() -> None:
     dataset = _constant_field_dataset()
     view = FilterView(dataset, inspect_dataset(dataset))
     points = view._plot.object.traverse(lambda element: element, specs=[hv.Points])
     palette = points[0].opts.get(backend="bokeh").kwargs["cmap"]
-    assert palette is BLUE_PURPLE_RED
-    assert palette[0] == "#0000ff"
-    assert palette[len(palette) // 2] == "#80007f"
-    assert palette[-1] == "#ff0000"
+    assert palette is VIRIDIS
+    assert palette[0].lower() == "#440154"
+    assert palette[-1].lower() == "#fde724"
 
 
 def test_tick_stylesheet_marks_each_distinct_value() -> None:
@@ -305,3 +313,130 @@ def test_filter_sliders_carry_data_ticklines(dataset: xr.Dataset) -> None:
             assert f"{last:.3f}% 0" in tick_sheets[0]
         else:
             assert not tick_sheets
+
+
+def test_inputs_are_always_styled_green() -> None:
+    dataset = _constant_field_dataset()
+    view = FilterView(dataset, inspect_dataset(dataset))
+    for name in ("a", "b"):
+        styled = view._filter_widgets[name].stylesheets
+        assert styled and CONTINUOUS_COLOR in styled[0]
+    assert view._is_continuous("a")
+
+
+def test_categorical_input_is_styled_green() -> None:
+    dataset = xr.Dataset(
+        {"varies": (("scope", "b"), np.arange(6.0).reshape(2, 3))},
+        coords={"scope": ["full", "fuel-only"], "b": [1, 2, 3]},
+    )
+    view = FilterView(dataset, inspect_dataset(dataset))
+    styled = view._filter_widgets["scope"].stylesheets
+    assert styled and CONTINUOUS_COLOR in styled[0]
+
+
+def test_dropdowns_mark_continuous_fields_green() -> None:
+    dataset = xr.Dataset(
+        {
+            "independent": (("a", "b"), np.arange(6.0).reshape(2, 3)),
+            "bucketed": (("a", "b"), np.array([[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]])),
+        },
+        coords={"a": [0, 1], "b": [1, 2, 3]},
+    )
+    view = FilterView(dataset, inspect_dataset(dataset))
+    labels = {value: label for label, value in view.variable_widget.options.items()}
+    assert labels["independent"].startswith(CONTINUOUS_MARKER)
+    assert labels["bucketed"].startswith(PLAIN_MARKER)
+    assert labels["a"].startswith(CONTINUOUS_MARKER)
+
+
+def test_axis_dropdown_keeps_markers_after_rebuild() -> None:
+    dataset = _constant_field_dataset()
+    view = FilterView(dataset, inspect_dataset(dataset))
+    view.variable_widget.value = "also_varies"
+    assert all(
+        label.startswith((CONTINUOUS_MARKER, PLAIN_MARKER)) for label in view.x_widget.options
+    )
+    assert set(view.y_widget.options.values()) == set(view.x_widget.options.values()) - {view.x_dim}
+
+
+def test_point_size_option_resizes_both_layers() -> None:
+    dataset = _constant_field_dataset()
+    view = FilterView(dataset, inspect_dataset(dataset))
+    drag(view._filter_widgets["varies"], (0.0, 2.0))
+    drag(view.point_size_widget, 14)
+
+    points = view._plot.object.traverse(lambda element: element, specs=[hv.Points])
+    assert len(points) == 2
+    assert all(element.opts.get(backend="bokeh").kwargs["size"] == 14 for element in points)
+
+
+def test_colour_divisions_band_the_palette() -> None:
+    dataset = _constant_field_dataset()
+    view = FilterView(dataset, inspect_dataset(dataset))
+    points = view._plot.object.traverse(lambda element: element, specs=[hv.Points])
+    assert points[0].opts.get(backend="bokeh").kwargs["cmap"] is VIRIDIS
+
+    view.continuous_color_widget.value = False
+    assert view.color_levels_widget.disabled is False
+    drag(view.color_levels_widget, 5)
+    points = view._plot.object.traverse(lambda element: element, specs=[hv.Points])
+    palette = points[0].opts.get(backend="bokeh").kwargs["cmap"]
+    assert len(palette) == 5
+    assert palette[0] == VIRIDIS[0]
+    assert palette[-1] == VIRIDIS[-1]
+
+    view.continuous_color_widget.value = True
+    assert view.color_levels_widget.disabled is True
+
+
+def test_hamburger_menu_toggles_the_options_panel() -> None:
+    dataset = _constant_field_dataset()
+    view = FilterView(dataset, inspect_dataset(dataset))
+    assert view._menu.visible is False
+    view.menu_toggle.value = True
+    assert view._menu.visible is True
+    assert view.point_size_widget in view._menu
+    assert view.color_levels_widget in view._menu
+
+
+def test_tapping_a_point_reports_its_design_point() -> None:
+    dataset = _constant_field_dataset()
+    captured: list[tuple[dict[str, object], str]] = []
+    view = FilterView(
+        dataset,
+        inspect_dataset(dataset),
+        on_point_selected=lambda coordinates, variable: captured.append((coordinates, variable)),
+    )
+    rows = view._selected_rows
+    assert rows is not None and len(rows) == 6
+
+    view._on_point_tapped([3])
+    assert len(captured) == 1
+    coordinates, variable = captured[0]
+    assert coordinates == {"a": rows.iloc[3]["a"], "b": rows.iloc[3]["b"]}
+    assert variable == view.variable
+
+    view._on_point_tapped([])
+    assert len(captured) == 1
+
+
+def test_dragging_a_slider_does_not_redraw_until_release() -> None:
+    dataset = _constant_field_dataset()
+    view = FilterView(dataset, inspect_dataset(dataset))
+    widget = view._filter_widgets["varies"]
+    before = view._plot.object
+
+    # Intermediate positions during the gesture must not rebuild the plot.
+    for upper in (4.0, 3.0, 2.0):
+        widget.value = (0.0, upper)
+    assert view._plot.object is before
+
+    drag(widget, (0.0, 2.0))
+    assert view._plot.object is not before
+
+
+def test_plot_pane_has_a_fixed_height() -> None:
+    dataset = _constant_field_dataset()
+    view = FilterView(dataset, inspect_dataset(dataset))
+    assert view._plot.height == 560
+    assert view._plot.sizing_mode == "stretch_width"

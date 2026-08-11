@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import holoviews as hv
@@ -10,10 +11,11 @@ import pandas as pd
 import panel as pn
 import xarray as xr
 
-from hyperslice.colors import BLUE_PURPLE_RED
+from hyperslice.colors import VIRIDIS, banded
 from hyperslice.schema import DatasetSchema, axis_label
 
-#: Label styling for high-cardinality outputs — every sample an independent value.
+#: Label styling for inputs and high-cardinality outputs — every sample an
+#: independent value rather than one of a few shared levels.
 CONTINUOUS_COLOR = "#0b8a3e"
 CONTINUOUS_STYLESHEET = f"""
 label, .bk-slider-title, .bk-input-group label {{
@@ -26,6 +28,29 @@ label, .bk-slider-title, .bk-input-group label {{
 #: would render as a solid bar rather than readable marks.
 TICK_LIMIT = 160
 TICK_COLOR = "#8b9aa9"
+
+#: Native dropdowns ignore per-option CSS, so continuity is marked with a glyph
+#: that carries its own colour. Both markers are the same width so names align.
+CONTINUOUS_MARKER = "🟢 "
+PLAIN_MARKER = "◦ "
+
+
+def watch_settled(widget: pn.widgets.Widget, handler: Callable[[Any], None]) -> None:
+    """Call *handler* once a widget settles rather than on every intermediate value.
+
+    Sliders emit ``value`` continuously while dragged; redrawing on each tick
+    replaces the plot mid-gesture and costs the browser its scroll position.
+    Widgets without a throttled trait (dropdowns, checkboxes) settle instantly.
+    """
+    trait = "value_throttled" if "value_throttled" in widget.param else "value"
+    widget.param.watch(handler, trait)
+
+
+def option_map(names: list[str], continuous: Callable[[str], bool]) -> dict[str, str]:
+    """Label each option, marking the continuous ones green."""
+    return {
+        f"{CONTINUOUS_MARKER if continuous(name) else PLAIN_MARKER}{name}": name for name in names
+    }
 
 
 def tick_stylesheet(values: Any, start: float, end: float) -> str | None:
@@ -66,9 +91,16 @@ def tick_stylesheet(values: Any, start: float, end: float) -> str | None:
 class FilterView:
     """Project every sample onto two axes and outline samples outside active ranges."""
 
-    def __init__(self, dataset: xr.Dataset, schema: DatasetSchema) -> None:
+    def __init__(
+        self,
+        dataset: xr.Dataset,
+        schema: DatasetSchema,
+        *,
+        on_point_selected: Callable[[dict[str, Any], str], None] | None = None,
+    ) -> None:
         self.dataset = dataset
         self.schema = schema
+        self.on_point_selected = on_point_selected
         outputs = [name for name, info in schema.variables.items() if not info.constant] or list(
             schema.variables
         )
@@ -88,16 +120,24 @@ class FilterView:
             name for name in compatible_outputs if name not in varying_dims
         ]
         self.variable_widget = pn.widgets.Select(
-            name="Z variable", options=variables, value=variable
+            name="Z variable", options=self._options(variables), value=variable
         )
         self.x_widget = pn.widgets.Select(
-            name="X axis", options=axis_options, value=varying_dims[-1]
+            name="X axis", options=self._options(axis_options), value=varying_dims[-1]
         )
         self.y_widget = pn.widgets.Select(
             name="Y axis",
-            options=[name for name in axis_options if name != varying_dims[-1]],
+            options=self._options([name for name in axis_options if name != varying_dims[-1]]),
             value=varying_dims[-2] if len(varying_dims) > 1 else axis_options[0],
         )
+        self.point_size_widget = pn.widgets.IntSlider(
+            name="Point size", start=3, end=24, step=1, value=6
+        )
+        self.continuous_color_widget = pn.widgets.Checkbox(name="Continuous colour", value=True)
+        self.color_levels_widget = pn.widgets.IntSlider(
+            name="Colour divisions", start=2, end=50, step=1, value=8, disabled=True
+        )
+        self.menu_toggle = pn.widgets.Toggle(name="☰", width=45, align="end")
         self._axis_matrix = pn.Column()
         self._axis_x_checks: dict[str, pn.widgets.Checkbox] = {}
         self._axis_y_checks: dict[str, pn.widgets.Checkbox] = {}
@@ -113,14 +153,30 @@ class FilterView:
             value="Outline",
             button_type="default",
         )
-        self._plot = pn.pane.HoloViews(min_height=540, sizing_mode="stretch_both")
+        # Fixed height: a re-rendered plot that changes size would shift the
+        # filter controls below it and cost the browser its scroll anchor.
+        self._plot = pn.pane.HoloViews(height=560, sizing_mode="stretch_width")
         self._summary = pn.pane.Markdown()
         self._coverage = pn.pane.Alert("", alert_type="warning", visible=False)
         self._message = pn.pane.Alert("", alert_type="danger", visible=False)
+        self._menu = pn.Column(
+            self.point_size_widget,
+            self.continuous_color_widget,
+            self.color_levels_widget,
+            visible=False,
+            styles={"padding": "8px", "background": "#eef2f6", "border-radius": "6px"},
+        )
+        self._selected_rows: pd.DataFrame | None = None
         self.variable_widget.param.watch(self._on_variable, "value")
         self.x_widget.param.watch(self._on_x, "value")
         self.y_widget.param.watch(self._on_y, "value")
         self.nonmatching_widget.param.watch(lambda _event: self._update(), "value")
+        watch_settled(self.point_size_widget, lambda _event: self._update())
+        watch_settled(self.color_levels_widget, lambda _event: self._update())
+        self.continuous_color_widget.param.watch(self._on_continuous_color, "value")
+        self.menu_toggle.param.watch(
+            lambda event: setattr(self._menu, "visible", event.new), "value"
+        )
         self._rebuild_axis_matrix()
         self._rebuild_filters()
         self._update()
@@ -170,9 +226,29 @@ class FilterView:
         ]
 
     def _is_continuous(self, name: str) -> bool:
-        """True when an output's values are essentially all independent."""
+        """True when a field's values are essentially all independent.
+
+        Every input qualifies: a swept coordinate's levels are distinct by
+        construction, since the schema rejects duplicate coordinate values.
+        """
+        if name in self.schema.coordinates:
+            return True
         info = self.schema.variables.get(name)
         return bool(info and info.high_cardinality)
+
+    def _options(self, names: list[str]) -> dict[str, str]:
+        """Dropdown options labelled so continuous fields read green."""
+        return option_map(names, self._is_continuous)
+
+    def _palette(self) -> list[str]:
+        """Colour ramp for the z axis, banded when divisions are requested."""
+        if self.continuous_color_widget.value:
+            return VIRIDIS
+        return banded(int(self.color_levels_widget.value))
+
+    def _on_continuous_color(self, event: Any) -> None:
+        self.color_levels_widget.disabled = bool(event.new)
+        self._update()
 
     def _axis_candidates(self) -> list[str]:
         dimensions = self._varying_dimensions()
@@ -180,22 +256,22 @@ class FilterView:
 
     def _on_variable(self, _event: Any) -> None:
         candidates = self._axis_candidates()
-        self.x_widget.options = candidates
+        self.x_widget.options = self._options(candidates)
         if self.x_dim not in candidates:
             self.x_widget.value = candidates[-1]
-        self.y_widget.options = [candidate for candidate in candidates if candidate != self.x_dim]
-        if self.y_dim not in self.y_widget.options:
-            self.y_widget.value = self.y_widget.options[-1]
+        remaining = [candidate for candidate in candidates if candidate != self.x_dim]
+        self.y_widget.options = self._options(remaining)
+        if self.y_dim not in remaining:
+            self.y_widget.value = remaining[-1]
         self._rebuild_axis_matrix()
         self._rebuild_filters()
         self._update()
 
     def _on_x(self, _event: Any) -> None:
-        self.y_widget.options = [
-            candidate for candidate in self._axis_candidates() if candidate != self.x_dim
-        ]
-        if self.y_dim not in self.y_widget.options:
-            self.y_widget.value = self.y_widget.options[-1]
+        remaining = [candidate for candidate in self._axis_candidates() if candidate != self.x_dim]
+        self.y_widget.options = self._options(remaining)
+        if self.y_dim not in remaining:
+            self.y_widget.value = remaining[-1]
         self._sync_axis_matrix()
         self._update()
 
@@ -385,7 +461,7 @@ class FilterView:
                 disabled=missing_count == len(values),
                 stylesheets=slider_styles,
             )
-            widget.param.watch(lambda _event: self._update(), "value")
+            watch_settled(widget, lambda _event: self._update())
             widgets[name] = widget
             if not missing_count:
                 cells.append(widget)
@@ -423,22 +499,29 @@ class FilterView:
             value_label = self._axis_label(self.variable)
             color_low, color_high, _ = self._range_spec(frame[self.variable].to_numpy())
             color_limits = (color_low, color_high)
+            palette = self._palette()
+            size = int(self.point_size_widget.value)
             vdims = [column for column in frame.columns if column not in {self.x_dim, self.y_dim}]
+            inside = frame.loc[included].reset_index(drop=True)
+            self._selected_rows = inside
             selected = hv.Points(
-                frame.loc[included],
+                inside,
                 kdims=[self.x_dim, self.y_dim],
                 vdims=vdims,
                 label="Inside filters",
             ).opts(
                 color=self.variable,
-                cmap=BLUE_PURPLE_RED,
+                cmap=palette,
                 clim=color_limits,
                 alpha=1.0,
-                size=6,
+                size=size,
                 colorbar=True,
                 colorbar_opts={"title": value_label},
-                tools=["hover"],
+                tools=["hover", "tap"],
+                nonselection_alpha=1.0,
             )
+            self._tap_stream = hv.streams.Selection1D(source=selected)
+            self._tap_stream.add_subscriber(self._on_point_tapped)
             plot = selected
             if self.nonmatching_widget.value == "Outline":
                 outlined = hv.Points(
@@ -448,12 +531,12 @@ class FilterView:
                     label="Outside filters",
                 ).opts(
                     color=self.variable,
-                    cmap=BLUE_PURPLE_RED,
+                    cmap=palette,
                     clim=color_limits,
                     fill_alpha=0.0,
                     line_alpha=1.0,
                     line_width=1.5,
-                    size=6,
+                    size=size,
                     tools=["hover"],
                 )
                 plot = outlined * selected
@@ -476,6 +559,14 @@ class FilterView:
         except Exception as exc:
             self._message.object = str(exc)
             self._message.visible = True
+
+    def _on_point_tapped(self, index: list[int]) -> None:
+        """Hand the tapped sample's design point to the slicer."""
+        if not index or self.on_point_selected is None or self._selected_rows is None:
+            return
+        row = self._selected_rows.iloc[index[0]]
+        coordinates = {dim: row[dim] for dim in self._grid_dimensions() if dim in row}
+        self.on_point_selected(coordinates, self.variable)
 
     def _update_coverage(self, frame: pd.DataFrame, included: np.ndarray) -> None:
         """Report samples the plot cannot color and filters the user cannot apply."""
@@ -510,7 +601,12 @@ class FilterView:
 
     def _build_view(self) -> pn.viewable.Viewable:
         controls = pn.Column(
-            pn.pane.Markdown("## Filter"),
+            pn.Row(
+                pn.pane.Markdown("## Filter", sizing_mode="stretch_width"),
+                self.menu_toggle,
+                sizing_mode="stretch_width",
+            ),
+            self._menu,
             self.variable_widget,
             pn.Row(self.x_widget, self.y_widget),
             pn.pane.Markdown("### Non-matching points"),

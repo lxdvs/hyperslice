@@ -8,7 +8,7 @@ import holoviews as hv
 import numpy as np
 import xarray as xr
 
-from hyperslice.colors import BLUE_PURPLE_RED
+from hyperslice.colors import VIRIDIS
 from hyperslice.interpolation import linear_contour_surface
 from hyperslice.schema import axis_label
 from hyperslice.status import SliceStatus
@@ -42,7 +42,7 @@ def build_plot(
     image = hv.QuadMesh(data, kdims=[x_dim, y_dim], vdims=vdims)
     common = dict(
         colorbar=True,
-        cmap=BLUE_PURPLE_RED,
+        cmap=VIRIDIS,
         responsive=True,
         height=570,
         title=title,

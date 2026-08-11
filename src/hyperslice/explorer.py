@@ -8,13 +8,15 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
 
+import holoviews as hv
 import numpy as np
 import panel as pn
 import xarray as xr
 
+from hyperslice.colors import HIGHLIGHT_COLOR
 from hyperslice.exceptions import DatasetSchemaError, SliceError
 from hyperslice.export import bytes_io, csv_bytes, netcdf_bytes, save_png
-from hyperslice.filtering import FilterView
+from hyperslice.filtering import FilterView, watch_settled
 from hyperslice.loading import DatasetSource, load_dataset
 from hyperslice.plotting import build_plot
 from hyperslice.schema import DatasetSchema, inspect_dataset
@@ -22,6 +24,36 @@ from hyperslice.slicing import SliceMethod, make_slice
 from hyperslice.status import SliceStatus, apply_strict_validity, classify_slice
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _cell_edges(values: np.ndarray, index: int) -> tuple[float, float]:
+    """Half-way boundaries of the heatmap cell centred on ``values[index]``."""
+    center = float(values[index])
+    if values.size == 1:
+        span = max(abs(center) * 0.05, 0.5)
+        return center - span, center + span
+    below = (
+        float(values[index - 1]) if index > 0 else center - (float(values[1]) - float(values[0]))
+    )
+    above = (
+        float(values[index + 1])
+        if index < values.size - 1
+        else center + (float(values[-1]) - float(values[-2]))
+    )
+    return (center + below) / 2, (center + above) / 2
+
+
+def _nearest_option(options: list[Any], value: Any) -> Any:
+    """Pick the option matching *value*, falling back to the closest number."""
+    if value in options:
+        return value
+    try:
+        target = float(value)
+        return min(options, key=lambda option: abs(float(option) - target))
+    except (TypeError, ValueError):
+        return options[0] if options else value
+
+
 pn.extension(sizing_mode="stretch_width")
 
 TAB_STYLES = """
@@ -145,6 +177,7 @@ class Explorer:
         self._png = pn.widgets.FileDownload(
             label="Download PNG", callback=self._png_download, filename="hyperslice.png"
         )
+        self._selected_point: dict[str, Any] = {}
         self._current_slice: xr.DataArray | None = None
         self._current_status: SliceStatus | None = None
         self._wire_events()
@@ -152,7 +185,9 @@ class Explorer:
         self._rebuild_axis_matrix()
         self._update()
         self.slicer_view = self._build_view()
-        self.filter_view = FilterView(self.dataset, self.schema)
+        self.filter_view = FilterView(
+            self.dataset, self.schema, on_point_selected=self.open_design_point
+        )
         self.view = pn.Tabs(
             ("Filter", self.filter_view.view),
             ("Slicer", self.slicer_view),
@@ -160,6 +195,40 @@ class Explorer:
             stylesheets=[TAB_STYLES],
             sizing_mode="stretch_both",
         )
+
+    def open_design_point(self, coordinates: dict[str, Any], variable: str | None = None) -> None:
+        """Pin the slicer to *coordinates* and bring it to the front.
+
+        Dimensions currently on an axis have no fixed-coordinate widget and are
+        left alone; the rest are moved to the nearest available grid value.
+        """
+        self._selected_point = dict(coordinates)
+        if variable and variable in self.variable_widget.options:
+            self.variable_widget.value = variable
+        for dim, value in coordinates.items():
+            widget = self._dimension_widgets.get(dim)
+            if widget is not None:
+                widget.value = _nearest_option(list(widget.options), value)
+        self._update()
+        self.view.active = 1
+
+    def _selection_outline(self) -> hv.Bounds | None:
+        """Rectangle around the selected design point's cell, if it is on screen."""
+        if not self._selected_point:
+            return None
+        edges: list[float] = []
+        for dim in (self.x_dim, self.y_dim):
+            if dim not in self._selected_point:
+                return None
+            values = np.asarray(self.dataset.coords[dim].values, dtype=float)
+            try:
+                target = float(self._selected_point[dim])
+            except (TypeError, ValueError):
+                return None
+            index = int(np.argmin(np.abs(values - target)))
+            edges.extend(_cell_edges(values, index))
+        left, right, bottom, top = edges
+        return hv.Bounds((left, bottom, right, top))
 
     def _default_status(self) -> str | None:
         return self.schema.status_candidates[0] if self.schema.status_candidates else None
@@ -199,7 +268,7 @@ class Explorer:
         self.variable_widget.param.watch(self._on_variable, "value")
         self.x_widget.param.watch(self._on_x, "value")
         self.y_widget.param.watch(self._on_y, "value")
-        self.pareto_value_widget.param.watch(self._on_pareto_value, "value")
+        watch_settled(self.pareto_value_widget, self._on_pareto_value)
         for widget in (
             self.method_widget,
             self.plot_type_widget,
@@ -357,7 +426,7 @@ class Explorer:
             dim: self._coordinate_widget(dim) for dim in dims if dim not in {self.x_dim, self.y_dim}
         }
         for widget in self._dimension_widgets.values():
-            widget.param.watch(lambda _event: self._update(), "value")
+            watch_settled(widget, lambda _event: self._update())
         # Constant dimensions still pin the slice, but a one-option slicer is noise.
         self._dimension_box.objects = [
             widget
@@ -427,6 +496,9 @@ class Explorer:
             except SliceError as exc:
                 pareto_error = str(exc)
                 plot = build_plot(result, **plot_arguments)
+            outline = self._selection_outline()
+            if outline is not None:
+                plot = plot * outline.opts(color=HIGHLIGHT_COLOR, line_width=3, backend="bokeh")
             self._plot.object = plot
             counts = status.counts
             cells = int(np.prod(result.shape))
