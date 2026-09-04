@@ -13,6 +13,7 @@ import xarray as xr
 
 from hyperslice.colors import HIGHLIGHT_COLOR, VIRIDIS, banded
 from hyperslice.schema import DatasetSchema, axis_label
+from hyperslice.widgets import reset_view_button
 
 #: Opacity of samples outside the active filters. Low enough to read as
 #: background against the matching cloud, high enough to keep the shape of the
@@ -187,6 +188,8 @@ class FilterView:
         # Fixed height: a re-rendered plot that changes size would shift the
         # filter controls below it and cost the browser its scroll anchor.
         self._plot = pn.pane.HoloViews(height=560, sizing_mode="stretch_width")
+        self._plot_box = pn.Column(self._plot, sizing_mode="stretch_width")
+        self._reset_view = reset_view_button(self._plot_box)
         self._summary = pn.pane.Markdown()
         self._coverage = pn.pane.Alert("", alert_type="warning", visible=False)
         self._message = pn.pane.Alert("", alert_type="danger", visible=False)
@@ -731,7 +734,8 @@ class FilterView:
         )
         main = pn.Column(
             self._message,
-            self._plot,
+            self._plot_box,
+            self._reset_view,
             self._coverage,
             self._summary,
             pn.pane.Markdown("### Input and output filters"),

@@ -23,6 +23,7 @@ from hyperslice.schema import DatasetSchema, inspect_dataset
 from hyperslice.sensitivity import labelled_frame, sensitivity_frame
 from hyperslice.slicing import SliceMethod, make_slice
 from hyperslice.status import SliceStatus, apply_strict_validity, classify_slice
+from hyperslice.widgets import reset_view_button
 
 LOGGER = logging.getLogger(__name__)
 
@@ -180,6 +181,8 @@ class Explorer:
         # with whatever sits below it, pushing the plot past the window and
         # leaving the sensitivity table off screen.
         self._plot = pn.pane.HoloViews(height=590, sizing_mode="stretch_width")
+        self._plot_box = pn.Column(self._plot, sizing_mode="stretch_width")
+        self._reset_view = reset_view_button(self._plot_box)
         self._csv = pn.widgets.FileDownload(
             label="Download CSV", callback=self._csv_download, filename="hyperslice.csv"
         )
@@ -682,7 +685,8 @@ class Explorer:
         )
         main = pn.Column(
             self._message,
-            self._plot,
+            self._plot_box,
+            self._reset_view,
             self._sensitivity_box,
             self._slice_info,
             sizing_mode="stretch_both",

@@ -71,5 +71,6 @@ module = [
   "hyperslice.schema",
   "hyperslice.slicing",
   "hyperslice.status",
+  "hyperslice.widgets",
 ]
 ignore_errors = true
