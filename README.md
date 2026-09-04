@@ -144,6 +144,8 @@ missing when required support is incomplete.
 - Heatmap/image, filled contour, and contour-line views with hover and colorbar
 - Units and long names on axes and values
 - Valid, invalid, and missing sample overlays and counts
+- Filter view opening on the most interesting fields: outputs before inputs,
+  ranked by how many distinct values each takes
 - Design-point selection linked across the filter and slicer views, clearing any
   filter that would hide the selected point
 - A local sensitivity table of every output against every input at the selected

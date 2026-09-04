@@ -16,6 +16,8 @@ from hyperslice.filtering import (
     PLAIN_MARKER,
     TICK_LIMIT,
     FilterView,
+    distinct_values,
+    most_interesting,
     tick_stylesheet,
 )
 from hyperslice.schema import inspect_dataset
@@ -502,3 +504,42 @@ def test_plot_pane_has_a_fixed_height() -> None:
     view = FilterView(dataset, inspect_dataset(dataset))
     assert view._plot.height == 560
     assert view._plot.sizing_mode == "stretch_width"
+
+
+def test_filter_view_opens_on_the_most_interesting_outputs(dataset: xr.Dataset) -> None:
+    schema = inspect_dataset(dataset)
+    view = FilterView(dataset, schema)
+    by_distinct = sorted(
+        (name for name, info in schema.variables.items() if not info.constant),
+        key=lambda name: schema.variables[name].distinct_count,
+        reverse=True,
+    )
+    # Z takes the output with the most distinct values, X the next output, and
+    # Y — the outputs exhausted — the input swept over the most levels.
+    assert view.variable == by_distinct[0]
+    assert view.x_dim == by_distinct[1]
+    swept = max(
+        (dim for dim in dataset[view.variable].dims if not schema.coordinates[dim].constant),
+        key=lambda dim: schema.coordinates[dim].size,
+    )
+    assert view.y_dim == swept
+    assert len({view.variable, view.x_dim, view.y_dim}) == 3
+
+
+def test_most_interesting_prefers_outputs_then_distinct_counts() -> None:
+    dataset = xr.Dataset(
+        {
+            "coarse": (("a", "b"), np.repeat([[0.0, 1.0]], 4, axis=0)),
+            "fine": (("a", "b"), np.arange(8.0).reshape(4, 2)),
+        },
+        coords={"a": [0.0, 1.0, 2.0, 3.0], "b": [0.0, 1.0]},
+    )
+    schema = inspect_dataset(dataset)
+    assert distinct_values(schema, "fine") == 8
+    assert distinct_values(schema, "coarse") == 2
+    assert distinct_values(schema, "a") == 4
+    assert most_interesting(schema, ["b", "a", "coarse", "fine"]) == ["fine", "coarse", "a", "b"]
+
+    view = FilterView(dataset, schema)
+    assert (view.variable, view.x_dim, view.y_dim) == ("fine", "coarse", "a")
+    assert "coarse" not in view.y_widget.options.values()

@@ -93,6 +93,27 @@ def tick_stylesheet(values: Any, start: float, end: float) -> str | None:
 """
 
 
+def distinct_values(schema: DatasetSchema, name: str) -> int:
+    """Number of distinct values *name* takes: sampled levels for an input."""
+    if name in schema.coordinates:
+        return int(schema.coordinates[name].size)
+    return int(schema.variables[name].distinct_count)
+
+
+def most_interesting(schema: DatasetSchema, names: list[str]) -> list[str]:
+    """Order *names* from most to least interesting.
+
+    Outputs come before inputs — they are what a sweep was run to learn — and
+    within each class a field taking more distinct values ranks higher, since
+    it has more structure to show. Ties keep the dataset's own order.
+    """
+    return sorted(
+        names,
+        key=lambda name: (name in schema.variables, distinct_values(schema, name)),
+        reverse=True,
+    )
+
+
 class FilterView:
     """Project every sample onto two axes and outline samples outside active ranges."""
 
@@ -109,7 +130,9 @@ class FilterView:
         outputs = [name for name, info in schema.variables.items() if not info.constant] or list(
             schema.variables
         )
-        variable = outputs[0]
+        # Open on the most interesting fields: outputs before inputs, and
+        # within each class the one taking the most distinct values.
+        variable = most_interesting(schema, outputs)[0]
         dims = list(schema.variables[variable].dims)
         # Any field can colour the cloud, inputs included.
         variables = outputs + [
@@ -124,16 +147,19 @@ class FilterView:
         axis_options = varying_dims + [
             name for name in compatible_outputs if name not in varying_dims
         ]
+        x_default, y_default = most_interesting(
+            schema, [name for name in axis_options if name != variable] or axis_options
+        )[:2]
         self.variable_widget = pn.widgets.Select(
             name="Z variable", options=self._options(variables), value=variable
         )
         self.x_widget = pn.widgets.Select(
-            name="X axis", options=self._options(axis_options), value=varying_dims[-1]
+            name="X axis", options=self._options(axis_options), value=x_default
         )
         self.y_widget = pn.widgets.Select(
             name="Y axis",
-            options=self._options([name for name in axis_options if name != varying_dims[-1]]),
-            value=varying_dims[-2] if len(varying_dims) > 1 else axis_options[0],
+            options=self._options([name for name in axis_options if name != x_default]),
+            value=y_default,
         )
         self.point_size_widget = pn.widgets.IntSlider(
             name="Point size", start=3, end=24, step=1, value=6
