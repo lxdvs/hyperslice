@@ -20,6 +20,7 @@ from hyperslice.filtering import FilterView, watch_settled
 from hyperslice.loading import DatasetSource, load_dataset
 from hyperslice.plotting import build_plot
 from hyperslice.schema import DatasetSchema, inspect_dataset
+from hyperslice.sensitivity import labelled_frame, sensitivity_frame
 from hyperslice.slicing import SliceMethod, make_slice
 from hyperslice.status import SliceStatus, apply_strict_validity, classify_slice
 
@@ -41,6 +42,14 @@ def _cell_edges(values: np.ndarray, index: int) -> tuple[float, float]:
         else center + (float(values[-1]) - float(values[-2]))
     )
     return (center + below) / 2, (center + above) / 2
+
+
+def _coordinate_text(value: Any) -> str:
+    """Render a coordinate value compactly, without float noise."""
+    try:
+        return f"{float(value):g}"
+    except (TypeError, ValueError):
+        return str(value)
 
 
 def _nearest_option(options: list[Any], value: Any) -> Any:
@@ -167,7 +176,10 @@ class Explorer:
         self._syncing_axis_matrix = False
         self._message = pn.pane.Alert("", alert_type="info", visible=False)
         self._slice_info = pn.pane.Markdown()
-        self._plot = pn.pane.HoloViews(min_height=600, sizing_mode="stretch_both")
+        # Fixed height, matching the filter view: a pane free to stretch grows
+        # with whatever sits below it, pushing the plot past the window and
+        # leaving the sensitivity table off screen.
+        self._plot = pn.pane.HoloViews(height=590, sizing_mode="stretch_width")
         self._csv = pn.widgets.FileDownload(
             label="Download CSV", callback=self._csv_download, filename="hyperslice.csv"
         )
@@ -178,6 +190,17 @@ class Explorer:
             label="Download PNG", callback=self._png_download, filename="hyperslice.png"
         )
         self._selected_point: dict[str, Any] = {}
+        self._sensitivity_title = pn.pane.Markdown(margin=(0, 0, 4, 0))
+        self._sensitivity_table = pn.pane.DataFrame(
+            index=True, sizing_mode="stretch_width", margin=(0, 0, 8, 0)
+        )
+        self._sensitivity_box = pn.Column(
+            self._sensitivity_title,
+            self._sensitivity_table,
+            visible=False,
+            sizing_mode="stretch_width",
+        )
+        self._tap_stream: hv.streams.Tap | None = None
         self._current_slice: xr.DataArray | None = None
         self._current_status: SliceStatus | None = None
         self._wire_events()
@@ -211,6 +234,57 @@ class Explorer:
                 widget.value = _nearest_option(list(widget.options), value)
         self._update()
         self.view.active = 1
+
+    def _watch_taps(self, plot: Any) -> None:
+        """Re-link the tap stream to the freshly built plot.
+
+        Every update replaces the figure, so the stream is rebuilt alongside it
+        and kept on the explorer — HoloViews would otherwise let it be collected.
+        """
+        elements = plot.traverse(lambda item: item, specs=[hv.Element])
+        if not elements:
+            return
+        stream = hv.streams.Tap(source=elements[0])
+        stream.add_subscriber(self._on_tap)
+        self._tap_stream = stream
+
+    def _on_tap(self, x: float | None = None, y: float | None = None) -> None:
+        """Select the design point under the tapped cell in both views."""
+        if x is None or y is None:
+            return
+        point = dict(self.fixed_selections)
+        for dim, position in ((self.x_dim, x), (self.y_dim, y)):
+            values = np.asarray(self.dataset.coords[dim].values, dtype=float)
+            index = int(np.argmin(np.abs(values - float(position))))
+            low, high = _cell_edges(values, index)
+            # A tap beyond the drawn cells names no design point.
+            if not low <= float(position) <= high:
+                return
+            point[dim] = self.dataset.coords[dim].values[index].item()
+        self._selected_point = point
+        self._update()
+        filter_view = getattr(self, "filter_view", None)
+        if filter_view is not None:
+            filter_view.select_point(point)
+
+    def _update_sensitivities(self) -> None:
+        """Tabulate each output's local slope against each input at the selection."""
+        if not self._selected_point:
+            self._sensitivity_box.visible = False
+            return
+        frame = sensitivity_frame(self.dataset, self.schema, self._selected_point)
+        self._sensitivity_table.object = labelled_frame(frame, self.schema)
+        described = ", ".join(
+            f"`{dim}` = {_coordinate_text(self._selected_point[dim])}"
+            for dim in self.schema.coordinates
+            if dim in self._selected_point
+        )
+        self._sensitivity_title.object = (
+            f"### Sensitivities\nAt {described}. Each cell is the partial derivative of the "
+            "row output with respect to the column input, differenced across "
+            "neighbouring samples on the grid."
+        )
+        self._sensitivity_box.visible = True
 
     def _selection_outline(self) -> hv.Bounds | None:
         """Rectangle around the selected design point's cell, if it is on screen."""
@@ -496,10 +570,12 @@ class Explorer:
             except SliceError as exc:
                 pareto_error = str(exc)
                 plot = build_plot(result, **plot_arguments)
+            self._watch_taps(plot)
             outline = self._selection_outline()
             if outline is not None:
                 plot = plot * outline.opts(color=HIGHLIGHT_COLOR, line_width=3, backend="bokeh")
             self._plot.object = plot
+            self._update_sensitivities()
             counts = status.counts
             cells = int(np.prod(result.shape))
             self._slice_info.object = (
@@ -604,7 +680,13 @@ class Explorer:
             scroll=True,
             styles={"padding": "12px", "background": "#f5f7f9"},
         )
-        main = pn.Column(self._message, self._plot, self._slice_info, sizing_mode="stretch_both")
+        main = pn.Column(
+            self._message,
+            self._plot,
+            self._sensitivity_box,
+            self._slice_info,
+            sizing_mode="stretch_both",
+        )
         return pn.Row(controls, main, sizing_mode="stretch_both", min_height=720)
 
     def show(self, **kwargs: Any) -> Any:

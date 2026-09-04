@@ -7,11 +7,12 @@ import xarray as xr
 from conftest import drag
 
 from hyperslice import Explorer
-from hyperslice.colors import VIRIDIS
+from hyperslice.colors import HIGHLIGHT_COLOR, VIRIDIS
 from hyperslice.explorer import TAB_STYLES
 from hyperslice.filtering import (
     CONTINUOUS_COLOR,
     CONTINUOUS_MARKER,
+    NONMATCHING_ALPHA,
     PLAIN_MARKER,
     TICK_LIMIT,
     FilterView,
@@ -46,7 +47,7 @@ def test_filter_view_has_input_and_output_absolute_ranges(dataset: xr.Dataset) -
         assert widget.end >= float(finite.max())
 
 
-def test_range_filter_outlines_points_without_removing_them(dataset: xr.Dataset) -> None:
+def test_range_filter_fades_points_without_removing_them(dataset: xr.Dataset) -> None:
     view = FilterView(dataset, inspect_dataset(dataset))
     frame = view._sample_frame()
     widget = view._filter_widgets["fuel_temperature"]
@@ -59,13 +60,24 @@ def test_range_filter_outlines_points_without_removing_them(dataset: xr.Dataset)
     assert counts["Inside filters"] > 0
     assert counts["Outside filters"] > 0
     assert sum(counts.values()) == len(frame)
-    outlined = next(point for point in points if point.label == "Outside filters")
-    options = outlined.opts.get(backend="bokeh").kwargs
-    assert options["fill_alpha"] == 0.0
-    assert options["line_alpha"] == 1.0
-    assert "alpha" not in options
+    faded = next(point for point in points if point.label == "Outside filters")
+    options = faded.opts.get(backend="bokeh").kwargs
+    assert options["alpha"] == NONMATCHING_ALPHA
+    assert 0.0 < NONMATCHING_ALPHA < 1.0
     inside = next(point for point in points if point.label == "Inside filters")
     assert inside.opts.get(backend="bokeh").kwargs["alpha"] == 1.0
+
+
+def test_nonmatching_points_are_faded_by_default(dataset: xr.Dataset) -> None:
+    view = FilterView(dataset, inspect_dataset(dataset))
+    assert view.nonmatching_widget.options == ["Fade", "Hide"]
+    assert view.nonmatching_widget.value == "Fade"
+
+
+def test_legend_clicks_hide_a_layer_rather_than_fading_it(dataset: xr.Dataset) -> None:
+    view = FilterView(dataset, inspect_dataset(dataset))
+    figure = hv.render(view._plot.object, backend="bokeh")
+    assert [legend.click_policy for legend in figure.legend] == ["hide"]
 
 
 def test_nonmatching_points_can_be_hidden(dataset: xr.Dataset) -> None:
@@ -418,6 +430,56 @@ def test_tapping_a_point_reports_its_design_point() -> None:
 
     view._on_point_tapped([])
     assert len(captured) == 1
+
+
+def test_tapping_a_point_rings_it_in_the_cloud() -> None:
+    dataset = _constant_field_dataset()
+    view = FilterView(dataset, inspect_dataset(dataset))
+    view._on_point_tapped([3])
+
+    rows = view._selected_rows
+    assert rows is not None
+    assert view._selected_point == {"a": rows.iloc[3]["a"], "b": rows.iloc[3]["b"]}
+    ring = next(
+        element
+        for element in view._plot.object.traverse(lambda item: item, specs=[hv.Points])
+        if element.label == "Selected point"
+    )
+    assert len(ring) == 1
+    options = ring.opts.get(backend="bokeh").kwargs
+    assert options["line_color"] == HIGHLIGHT_COLOR
+    assert options["fill_alpha"] == 0.0
+    assert options["size"] > view.point_size_widget.value
+
+
+def test_selecting_a_filtered_out_point_clears_every_filter(dataset: xr.Dataset) -> None:
+    view = FilterView(dataset, inspect_dataset(dataset))
+    widget = view._filter_widgets["fuel_temperature"]
+    drag(widget, (widget.start, (widget.start + widget.end) / 2))
+    assert "0 outside filters" not in view._summary.object
+
+    hidden = {dim: float(dataset.coords[dim].values[-1]) for dim in dataset["k_eff"].dims}
+    view.select_point(hidden)
+
+    assert widget.value == (widget.start, widget.end)
+    assert all(
+        checkbox.value is True for checkbox in view._missing_widgets.values()
+    )  # missing samples come back too
+    assert "0 outside filters" in view._summary.object
+    assert view._selected_point == hidden
+
+
+def test_selecting_a_visible_point_leaves_the_filters_alone(dataset: xr.Dataset) -> None:
+    view = FilterView(dataset, inspect_dataset(dataset))
+    widget = view._filter_widgets["fuel_temperature"]
+    narrowed = (widget.start, (widget.start + widget.end) / 2)
+    drag(widget, narrowed)
+
+    visible = {dim: float(dataset.coords[dim].values[0]) for dim in dataset["k_eff"].dims}
+    view.select_point(visible)
+
+    assert widget.value == narrowed
+    assert view._selected_point == visible
 
 
 def test_dragging_a_slider_does_not_redraw_until_release() -> None:

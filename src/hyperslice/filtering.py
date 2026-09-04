@@ -11,8 +11,13 @@ import pandas as pd
 import panel as pn
 import xarray as xr
 
-from hyperslice.colors import VIRIDIS, banded
+from hyperslice.colors import HIGHLIGHT_COLOR, VIRIDIS, banded
 from hyperslice.schema import DatasetSchema, axis_label
+
+#: Opacity of samples outside the active filters. Low enough to read as
+#: background against the matching cloud, high enough to keep the shape of the
+#: sampled space visible — filtering narrows attention, it does not delete data.
+NONMATCHING_ALPHA = 0.15
 
 #: Label styling for inputs and high-cardinality outputs — every sample an
 #: independent value rather than one of a few shared levels.
@@ -149,8 +154,8 @@ class FilterView:
         self._saved_missing: dict[str, bool] = {}
         self.nonmatching_widget = pn.widgets.RadioButtonGroup(
             name="Non-matching points",
-            options=["Outline", "Hide"],
-            value="Outline",
+            options=["Fade", "Hide"],
+            value="Fade",
             button_type="default",
         )
         # Fixed height: a re-rendered plot that changes size would shift the
@@ -167,6 +172,8 @@ class FilterView:
             styles={"padding": "8px", "background": "#eef2f6", "border-radius": "6px"},
         )
         self._selected_rows: pd.DataFrame | None = None
+        self._selected_point: dict[str, Any] = {}
+        self._resetting = False
         self.variable_widget.param.watch(self._on_variable, "value")
         self.x_widget.param.watch(self._on_x, "value")
         self.y_widget.param.watch(self._on_y, "value")
@@ -480,22 +487,29 @@ class FilterView:
         self._missing_widgets = missing_widgets
         self._filter_grid.objects = cells
 
+    def _included_mask(self, frame: pd.DataFrame) -> np.ndarray:
+        """Samples matching every active filter."""
+        included = np.ones(len(frame), dtype=bool)
+        for name, widget in self._filter_widgets.items():
+            values = frame[name].to_numpy()
+            if isinstance(widget, pn.widgets.MultiChoice):
+                included &= np.isin(values, widget.value)
+            else:
+                lower, upper = widget.value
+                finite = np.isfinite(np.asarray(values, dtype=float))
+                matched = finite & (values >= lower) & (values <= upper)
+                keep_missing = self._missing_widgets.get(name)
+                if keep_missing is not None and keep_missing.value:
+                    matched |= ~finite
+                included &= matched
+        return included
+
     def _update(self) -> None:
+        if self._resetting:
+            return
         try:
             frame = self._sample_frame()
-            included = np.ones(len(frame), dtype=bool)
-            for name, widget in self._filter_widgets.items():
-                values = frame[name].to_numpy()
-                if isinstance(widget, pn.widgets.MultiChoice):
-                    included &= np.isin(values, widget.value)
-                else:
-                    lower, upper = widget.value
-                    finite = np.isfinite(np.asarray(values, dtype=float))
-                    matched = finite & (values >= lower) & (values <= upper)
-                    keep_missing = self._missing_widgets.get(name)
-                    if keep_missing is not None and keep_missing.value:
-                        matched |= ~finite
-                    included &= matched
+            included = self._included_mask(frame)
             value_label = self._axis_label(self.variable)
             color_low, color_high, _ = self._range_spec(frame[self.variable].to_numpy())
             color_limits = (color_low, color_high)
@@ -523,8 +537,8 @@ class FilterView:
             self._tap_stream = hv.streams.Selection1D(source=selected)
             self._tap_stream.add_subscriber(self._on_point_tapped)
             plot = selected
-            if self.nonmatching_widget.value == "Outline":
-                outlined = hv.Points(
+            if self.nonmatching_widget.value == "Fade":
+                faded = hv.Points(
                     frame.loc[~included],
                     kdims=[self.x_dim, self.y_dim],
                     vdims=vdims,
@@ -533,13 +547,14 @@ class FilterView:
                     color=self.variable,
                     cmap=palette,
                     clim=color_limits,
-                    fill_alpha=0.0,
-                    line_alpha=1.0,
-                    line_width=1.5,
+                    alpha=NONMATCHING_ALPHA,
                     size=size,
                     tools=["hover"],
                 )
-                plot = outlined * selected
+                plot = faded * selected
+            highlight = self._selection_overlay(frame, size)
+            if highlight is not None:
+                plot = plot * highlight
             self._plot.object = plot.opts(
                 responsive=True,
                 height=540,
@@ -548,6 +563,10 @@ class FilterView:
                 title=f"{value_label} — all samples",
                 show_legend=True,
                 legend_position="right",
+                # Clicking a legend entry removes that layer outright. Bokeh's
+                # default is to mute it, which fades it to the same treatment
+                # non-matching points already carry — two states, one look.
+                legend_opts={"click_policy": "hide"},
             )
             self._summary.object = (
                 f"**{int(included.sum()):,} inside filters** · "
@@ -560,13 +579,78 @@ class FilterView:
             self._message.object = str(exc)
             self._message.visible = True
 
+    def _match_mask(self, frame: pd.DataFrame) -> np.ndarray | None:
+        """Rows of *frame* at the selected design point, or None if nothing is selected."""
+        if not self._selected_point:
+            return None
+        mask = np.ones(len(frame), dtype=bool)
+        matched = False
+        for dim in self._grid_dimensions():
+            if dim not in self._selected_point or dim not in frame.columns:
+                continue
+            values = frame[dim].to_numpy()
+            target = self._selected_point[dim]
+            if values.dtype.kind in "iufc":
+                mask &= np.isclose(values.astype(float), float(target))
+            else:
+                mask &= values == target
+            matched = True
+        return mask if matched else None
+
+    def _selection_overlay(self, frame: pd.DataFrame, size: int) -> hv.Points | None:
+        """Ring around the selected sample wherever it lands in the projection."""
+        mask = self._match_mask(frame)
+        if mask is None or not mask.any():
+            return None
+        return hv.Points(
+            frame.loc[mask, [self.x_dim, self.y_dim]],
+            kdims=[self.x_dim, self.y_dim],
+            label="Selected point",
+        ).opts(
+            fill_alpha=0.0,
+            line_color=HIGHLIGHT_COLOR,
+            line_width=3,
+            size=size + 8,
+        )
+
+    def select_point(self, coordinates: dict[str, Any]) -> None:
+        """Mark *coordinates* as the selected sample, clearing filters that hide it.
+
+        A selection the filters exclude would be invisible, so rather than
+        silently drop it the filters give way: the point the user asked for wins.
+        """
+        self._selected_point = dict(coordinates)
+        frame = self._sample_frame()
+        mask = self._match_mask(frame)
+        if mask is not None and mask.any() and not (mask & self._included_mask(frame)).any():
+            self.reset_filters()
+            return
+        self._update()
+
+    def reset_filters(self) -> None:
+        """Return every filter to its full range and include missing samples."""
+        self._resetting = True
+        try:
+            for widget in self._filter_widgets.values():
+                if isinstance(widget, pn.widgets.MultiChoice):
+                    widget.value = list(widget.options)
+                else:
+                    widget.value = (widget.start, widget.end)
+            for checkbox in self._missing_widgets.values():
+                checkbox.value = True
+        finally:
+            self._resetting = False
+        self._update()
+
     def _on_point_tapped(self, index: list[int]) -> None:
-        """Hand the tapped sample's design point to the slicer."""
-        if not index or self.on_point_selected is None or self._selected_rows is None:
+        """Select the tapped sample here and hand its design point to the slicer."""
+        if not index or self._selected_rows is None:
             return
         row = self._selected_rows.iloc[index[0]]
         coordinates = {dim: row[dim] for dim in self._grid_dimensions() if dim in row}
-        self.on_point_selected(coordinates, self.variable)
+        self.select_point(coordinates)
+        if self.on_point_selected is not None:
+            self.on_point_selected(coordinates, self.variable)
 
     def _update_coverage(self, frame: pd.DataFrame, included: np.ndarray) -> None:
         """Report samples the plot cannot color and filters the user cannot apply."""

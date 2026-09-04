@@ -205,6 +205,68 @@ def test_selected_design_point_is_outlined_in_the_slicer(dataset: xr.Dataset) ->
     assert bounds[0].opts.get(backend="bokeh").kwargs["color"] == HIGHLIGHT_COLOR
 
 
+def test_tapping_the_slicer_selects_the_point_in_both_views(dataset: xr.Dataset) -> None:
+    explorer = Explorer(dataset)
+    x_value = float(explorer.dataset.coords[explorer.x_dim].values[1])
+    y_value = float(explorer.dataset.coords[explorer.y_dim].values[2])
+
+    # Drive the stream the way the browser does: a position inside the cell.
+    assert explorer._tap_stream is not None
+    explorer._tap_stream.event(x=x_value + 1e-3, y=y_value - 1e-3)
+
+    expected = dict(explorer.fixed_selections) | {explorer.x_dim: x_value, explorer.y_dim: y_value}
+    assert explorer._selected_point == expected
+    assert explorer._selection_outline() is not None
+    assert explorer.filter_view._selected_point == expected
+    labels = [
+        element.label
+        for element in explorer.filter_view._plot.object.traverse(
+            lambda item: item, specs=[hv.Points]
+        )
+    ]
+    assert "Selected point" in labels
+
+
+def test_taps_beyond_the_drawn_cells_select_nothing(dataset: xr.Dataset) -> None:
+    explorer = Explorer(dataset)
+    x_values = np.asarray(explorer.dataset.coords[explorer.x_dim].values, dtype=float)
+    y_value = float(explorer.dataset.coords[explorer.y_dim].values[0])
+
+    explorer._on_tap(float(x_values.max()) * 10 + 1, y_value)
+    assert explorer._selected_point == {}
+    assert explorer._sensitivity_box.visible is False
+
+    explorer._on_tap(None, y_value)
+    assert explorer._selected_point == {}
+
+
+def test_sensitivity_table_reports_slopes_at_the_selected_point(dataset: xr.Dataset) -> None:
+    explorer = Explorer(dataset)
+    assert explorer._sensitivity_box.visible is False
+    assert explorer._sensitivity_box in explorer.slicer_view[1]
+
+    explorer._on_tap(
+        float(explorer.dataset.coords[explorer.x_dim].values[1]),
+        float(explorer.dataset.coords[explorer.y_dim].values[1]),
+    )
+
+    assert explorer._sensitivity_box.visible is True
+    table = explorer._sensitivity_table.object
+    assert list(table.index) == ["Multiplication factor [dimensionless]", "Peak temperature [K]"]
+    assert "Control drum angle [degree]" in table.columns
+    assert table.loc["Multiplication factor [dimensionless]", "Pressure [MPa]"] == "0.002"
+    for dim in explorer.schema.variables[explorer.variable].dims:
+        assert f"`{dim}` =" in explorer._sensitivity_title.object
+
+
+def test_tapping_a_filter_point_shows_its_sensitivities(dataset: xr.Dataset) -> None:
+    explorer = Explorer(dataset)
+    explorer.filter_view._on_point_tapped([11])
+    assert explorer.view.active == 1
+    assert explorer._sensitivity_box.visible is True
+    assert explorer._sensitivity_table.object is not None
+
+
 def test_highlight_colour_is_outside_viridis() -> None:
     assert HIGHLIGHT_COLOR.lower() not in {color.lower() for color in VIRIDIS}
 
@@ -214,3 +276,9 @@ def test_slicer_heatmap_uses_viridis(dataset: xr.Dataset) -> None:
     meshes = explorer._plot.object.traverse(lambda item: item, specs=[hv.QuadMesh])
     assert meshes
     assert meshes[0].opts.get(backend="bokeh").kwargs["cmap"] is VIRIDIS
+
+
+def test_slicer_plot_pane_has_a_fixed_height(dataset: xr.Dataset) -> None:
+    explorer = Explorer(dataset)
+    assert explorer._plot.height == 590
+    assert explorer._plot.sizing_mode == "stretch_width"
