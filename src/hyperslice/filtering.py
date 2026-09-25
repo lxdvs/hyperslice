@@ -252,7 +252,19 @@ class FilterView:
         self._axis_x_checks: dict[str, pn.widgets.Checkbox] = {}
         self._axis_y_checks: dict[str, pn.widgets.Checkbox] = {}
         self._syncing_axes = False
-        self._filter_grid = pn.GridBox(ncols=2, sizing_mode="stretch_width")
+        self._input_grid = pn.GridBox(ncols=2, sizing_mode="stretch_width")
+        self._output_grid = pn.GridBox(ncols=2, sizing_mode="stretch_width")
+        self._input_section = pn.Column(
+            pn.pane.Markdown("#### Inputs", margin=(4, 10, 0, 10)),
+            self._input_grid,
+            sizing_mode="stretch_width",
+        )
+        self._output_section = pn.Column(
+            pn.pane.Markdown("#### Outputs", margin=(4, 10, 0, 10)),
+            self._output_grid,
+            sizing_mode="stretch_width",
+        )
+        self._no_match = pn.pane.Markdown("", visible=False, sizing_mode="stretch_width")
         self.search_widget = pn.widgets.TextInput(
             placeholder="search...", width=220, align="center", margin=(0, 4, 0, 10)
         )
@@ -649,16 +661,19 @@ class FilterView:
         """
         self._pending_search = None
         query = self.search_widget.value_input or ""
-        shown = [
-            cell for cell, texts in self._filter_cells.values() if matches_search(query, *texts)
-        ]
-        if not shown and self._filter_cells:
-            shown = [
-                pn.pane.Markdown(
-                    f"No filters match `{query.strip()}`.", sizing_mode="stretch_width"
-                )
-            ]
-        self._filter_grid.objects = shown
+        inputs: list[Any] = []
+        outputs: list[Any] = []
+        for name, (cell, texts) in self._filter_cells.items():
+            if not matches_search(query, *texts):
+                continue
+            (inputs if name in self.schema.coordinates else outputs).append(cell)
+        self._input_grid.objects = inputs
+        self._output_grid.objects = outputs
+        self._input_section.visible = bool(inputs)
+        self._output_section.visible = bool(outputs)
+        nothing = not inputs and not outputs and bool(self._filter_cells)
+        self._no_match.object = f"No filters match `{query.strip()}`." if nothing else ""
+        self._no_match.visible = nothing
 
     def _included_mask(self, frame: pd.DataFrame) -> np.ndarray:
         """Samples matching every active filter."""
@@ -903,7 +918,9 @@ class FilterView:
                 self.clear_search_widget,
                 sizing_mode="stretch_width",
             ),
-            self._filter_grid,
+            self._input_section,
+            self._output_section,
+            self._no_match,
             sizing_mode="stretch_both",
         )
         return pn.Row(controls, main, sizing_mode="stretch_both", min_height=720)

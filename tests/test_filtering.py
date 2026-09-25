@@ -602,9 +602,36 @@ def test_most_interesting_prefers_outputs_then_distinct_counts() -> None:
 
 
 def _shown_filter_names(view: FilterView) -> list[str]:
-    """Names of the filters currently on screen, in grid order."""
-    shown = list(view._filter_grid.objects)
+    """Names of the filters currently on screen: the inputs section, then outputs."""
+    shown = list(view._input_grid.objects) + list(view._output_grid.objects)
     return [name for name, (cell, _texts) in view._filter_cells.items() if cell in shown]
+
+
+def test_filters_are_split_into_input_and_output_sections(dataset: xr.Dataset) -> None:
+    view = FilterView(dataset, inspect_dataset(dataset))
+    main = list(view.view[1])
+    assert main.index(view._output_section) == main.index(view._input_section) + 1
+    assert "Inputs" in view._input_section[0].object
+    assert "Outputs" in view._output_section[0].object
+    inputs = [
+        name for name, (cell, _t) in view._filter_cells.items() if cell in view._input_grid.objects
+    ]
+    outputs = [
+        name for name, (cell, _t) in view._filter_cells.items() if cell in view._output_grid.objects
+    ]
+    assert inputs and all(name in view.schema.coordinates for name in inputs)
+    assert outputs and all(name in view.schema.variables for name in outputs)
+    assert set(inputs) | set(outputs) == set(view._filter_widgets)
+    assert view._input_section.visible and view._output_section.visible
+    assert view._no_match.visible is False
+
+    # A search leaving one section empty hides that section, heading included.
+    view.search_widget.value_input = "k_eff"
+    assert view._input_section.visible is False
+    assert view._output_section.visible is True
+    view.search_widget.value_input = "burnup"
+    assert view._input_section.visible is True
+    assert view._output_section.visible is False
 
 
 def test_matches_search_is_case_insensitive_and_blank_matches_all() -> None:
@@ -669,8 +696,10 @@ def test_search_narrows_the_shown_filters_by_name_or_label(dataset: xr.Dataset) 
 
     view.search_widget.value_input = "no such filter"
     assert _shown_filter_names(view) == []
-    (notice,) = view._filter_grid.objects
-    assert "No filters match `no such filter`" in notice.object
+    assert view._input_section.visible is False
+    assert view._output_section.visible is False
+    assert view._no_match.visible is True
+    assert "No filters match `no such filter`" in view._no_match.object
 
     view.search_widget.value_input = ""
     assert _shown_filter_names(view) == everything
