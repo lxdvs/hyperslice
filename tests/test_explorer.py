@@ -266,7 +266,7 @@ def test_sensitivity_table_reports_slopes_at_the_selected_point(dataset: xr.Data
     assert "Control drum angle" in html
     assert f"{expected:.4g}" in html
     title = explorer._sensitivity_box[0].object
-    assert "Relative sensitivities" in title
+    assert "Relative/normalized Sensitivities" in title
     for dim in explorer.schema.variables[explorer.variable].dims:
         assert f"`{dim}` =" in title
 

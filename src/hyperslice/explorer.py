@@ -274,14 +274,7 @@ class Explorer:
             for dim in self.schema.coordinates
             if dim in self._selected_point
         )
-        self._sensitivities.update(
-            frame,
-            f"### Relative sensitivities\nAt {described}. Each value is the dimensionless "
-            "elasticity (x / y) dy/dx: the fractional change in the output per fractional "
-            "change in the input, differenced across neighbouring samples on the grid. "
-            "Bars scale to the largest magnitude for each output: red rises with the "
-            "input, blue falls.",
-        )
+        self._sensitivities.update(frame, f"### Relative/normalized Sensitivities\nAt {described}")
 
     def _selection_outline(self) -> hv.Bounds | None:
         """Rectangle around the selected design point's cell, if it is on screen."""
