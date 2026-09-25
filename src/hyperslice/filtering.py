@@ -56,6 +56,29 @@ def watch_settled(widget: pn.widgets.Widget, handler: Callable[[Any], None]) -> 
 #: Quiet time after the last keystroke before the filter search is applied.
 SEARCH_SETTLE_MS = 500
 
+#: Margin around the points inside the filters, as a fraction of their span on
+#: each side, matching HoloViews' own default framing.
+FRAME_PADDING = 0.1
+
+
+def axis_limits(values: Any) -> tuple[float, float] | None:
+    """Padded axis range framing the finite numeric *values*, or None if there are none.
+
+    A single distinct value gets a margin proportional to its magnitude, or of
+    one unit at zero, so the axis never collapses to zero width.
+    """
+    try:
+        numeric = np.asarray(values, dtype=float)
+    except (TypeError, ValueError):
+        return None
+    finite = numeric[np.isfinite(numeric)]
+    if finite.size == 0:
+        return None
+    low, high = float(finite.min()), float(finite.max())
+    span = high - low
+    pad = span * FRAME_PADDING if span > 0 else (abs(low) * FRAME_PADDING or 1.0)
+    return (low - pad, high + pad)
+
 
 def matches_search(query: str, *texts: str) -> bool:
     """Whether the (case-insensitive) *query* occurs in any of *texts*.
@@ -705,8 +728,19 @@ class FilterView:
             highlight = self._selection_overlay(frame, size)
             if highlight is not None:
                 plot = plot * highlight
+            # The default ranges, which "Reset plot bounds" restores, frame only
+            # the points inside the filters; faded points may lie off screen.
+            limits = {
+                key: limit
+                for key, limit in (
+                    ("xlim", axis_limits(inside[self.x_dim])),
+                    ("ylim", axis_limits(inside[self.y_dim])),
+                )
+                if limit is not None
+            }
             self._plot.object = plot.opts(
                 responsive=True,
+                **limits,
                 height=540,
                 xlabel=self._axis_label(self.x_dim),
                 ylabel=self._axis_label(self.y_dim),
