@@ -271,6 +271,15 @@ def test_sensitivity_table_reports_slopes_at_the_selected_point(dataset: xr.Data
         assert f"`{dim}` =" in title
 
 
+def test_tabs_render_only_the_active_view(dataset: xr.Dataset) -> None:
+    """Panel keeps a non-dynamic inactive tab in the page under the active one,
+    hidden by opacity alone, so its content still sets the page height and
+    can show through wherever the active tab is shorter."""
+    explorer = Explorer(dataset)
+    assert explorer.view.dynamic is True
+    assert explorer.view.active == 0
+
+
 def test_tapping_a_filter_point_shows_its_sensitivities(dataset: xr.Dataset) -> None:
     explorer = Explorer(dataset)
     explorer.filter_view._on_point_tapped([11])
