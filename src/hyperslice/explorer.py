@@ -271,7 +271,7 @@ class Explorer:
             filter_view.select_point(point)
 
     def _update_sensitivities(self) -> None:
-        """Tabulate each output's local slope against each input at the selection."""
+        """Tabulate each output's relative sensitivity to each input at the selection."""
         if not self._selected_point:
             self._sensitivity_box.visible = False
             return
@@ -283,9 +283,10 @@ class Explorer:
             if dim in self._selected_point
         )
         self._sensitivity_title.object = (
-            f"### Sensitivities\nAt {described}. Each cell is the partial derivative of the "
-            "row output with respect to the column input, differenced across "
-            "neighbouring samples on the grid."
+            f"### Relative sensitivities\nAt {described}. Each cell is the dimensionless "
+            "elasticity (x / y) dy/dx: the fractional change in the row output per "
+            "fractional change in the column input, differenced across neighbouring "
+            "samples on the grid."
         )
         self._sensitivity_box.visible = True
 
