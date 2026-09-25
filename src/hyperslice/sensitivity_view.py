@@ -5,7 +5,8 @@ a bar about a centre line: red and upward for a positive sensitivity, blue and
 downward for a negative one. Bar length is the coefficient's magnitude
 relative to the largest in that output's strip, so every strip has one
 full-length bar and the rest scale from it. A toggle beside each output label
-orders its cells by magnitude instead of grid order.
+orders the inputs by that output's magnitudes; the order applies to every
+strip, so the cells stay column-aligned across outputs.
 """
 
 from __future__ import annotations
@@ -36,7 +37,8 @@ SENSITIVITY_STYLES = f"""
   display: flex;
   flex-direction: column;
   gap: 2px;
-  min-width: 118px;
+  width: 118px;
+  flex: none;
   padding: 6px 8px;
   border: 1px solid #d5dde5;
   border-radius: 6px;
@@ -121,11 +123,11 @@ def ordered_inputs(row: pd.Series, by_magnitude: bool) -> list[str]:
     return sorted(names, key=key)
 
 
-def render_strip(row: pd.Series, labels: dict[str, str], by_magnitude: bool) -> str:
-    """HTML for one output's cells, in the requested order."""
+def render_strip(row: pd.Series, labels: dict[str, str], order: list[str] | None = None) -> str:
+    """HTML for one output's cells, in *order* (grid order when None)."""
     fractions = bar_fractions(row)
     cells = []
-    for name in ordered_inputs(row, by_magnitude):
+    for name in order if order is not None else (str(name) for name in row.index):
         value = float(row[name])
         text = format_sensitivity(value)
         label = escape(labels.get(name, name))
@@ -156,11 +158,17 @@ def render_strip(row: pd.Series, labels: dict[str, str], by_magnitude: bool) -> 
 
 
 class SensitivityPanel:
-    """Panel column showing a strip of bars per output, with a sort toggle each."""
+    """Panel column showing a strip of bars per output, with a sort toggle each.
+
+    At most one toggle is on: it names the output whose magnitudes order the
+    inputs, and that order is shared by every strip.
+    """
 
     def __init__(self, schema: DatasetSchema) -> None:
         self.schema = schema
         self._frame: pd.DataFrame | None = None
+        self._sort_by: str | None = None
+        self._syncing = False
         self._title = pn.pane.Markdown(margin=(0, 0, 4, 0))
         self._blocks = pn.Column(sizing_mode="stretch_width")
         self._strips: dict[str, pn.pane.HTML] = {}
@@ -177,6 +185,17 @@ class SensitivityPanel:
         """Coefficients on display: outputs as rows, inputs as columns."""
         return self._frame
 
+    @property
+    def sort_by(self) -> str | None:
+        """Output whose magnitudes order the inputs, or None for grid order."""
+        return self._sort_by
+
+    def input_order(self) -> list[str] | None:
+        """Shared column order for every strip, or None for grid order."""
+        if self._frame is None or self._sort_by not in self._frame.index:
+            return None
+        return ordered_inputs(self._frame.loc[self._sort_by], by_magnitude=True)
+
     def _input_labels(self) -> dict[str, str]:
         return {name: info.long_name for name, info in self.schema.coordinates.items()}
 
@@ -189,21 +208,44 @@ class SensitivityPanel:
             toggle = pn.widgets.Toggle(
                 name="Sort", icon="sort-descending", width=80, align="center", margin=(0, 0, 0, 8)
             )
-            toggle.param.watch(lambda _event, output=output: self._render(output), "value")
+            toggle.param.watch(lambda event, output=output: self._on_sort(output, event), "value")
             self.sort_toggles[output] = toggle
         return toggle
 
-    def _render(self, output: str) -> None:
-        if self._frame is None or output not in self._strips:
+    def _on_sort(self, output: str, event: Any) -> None:
+        if self._syncing:
             return
-        self._strips[output].object = render_strip(
-            self._frame.loc[output], self._input_labels(), bool(self.sort_toggles[output].value)
-        )
+        if event.new:
+            self._sort_by = output
+        elif self._sort_by == output:
+            self._sort_by = None
+        self._sync_toggles()
+        self._render_all()
+
+    def _sync_toggles(self) -> None:
+        """Leave only the ordering output's toggle on."""
+        self._syncing = True
+        try:
+            for name, toggle in self.sort_toggles.items():
+                toggle.value = name == self._sort_by
+        finally:
+            self._syncing = False
+
+    def _render_all(self) -> None:
+        if self._frame is None:
+            return
+        order = self.input_order()
+        labels = self._input_labels()
+        for output, strip in self._strips.items():
+            strip.object = render_strip(self._frame.loc[output], labels, order)
 
     def update(self, frame: pd.DataFrame, title: str) -> None:
         """Show *frame* (outputs by inputs) under *title*, keeping sort choices."""
         self._frame = frame
         self._title.object = title
+        if self._sort_by is not None and self._sort_by not in frame.index:
+            self._sort_by = None
+            self._sync_toggles()
         blocks: list[Any] = []
         self._strips = {}
         for output in (str(name) for name in frame.index):
@@ -219,7 +261,7 @@ class SensitivityPanel:
                 sizing_mode="stretch_width",
             )
             blocks.append(pn.Column(header, strip, sizing_mode="stretch_width"))
-            self._render(output)
+        self._render_all()
         self._blocks.objects = blocks
         self.view.visible = True
 
