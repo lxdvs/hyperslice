@@ -56,12 +56,13 @@ def test_filter_view_has_input_and_output_absolute_ranges(dataset: xr.Dataset) -
         assert widget.end >= float(finite.max())
 
 
-def test_range_filter_fades_points_without_removing_them(dataset: xr.Dataset) -> None:
+def test_range_filter_can_fade_points_instead_of_removing_them(dataset: xr.Dataset) -> None:
     view = FilterView(dataset, inspect_dataset(dataset))
     frame = view._sample_frame()
     widget = view._filter_widgets["fuel_temperature"]
     midpoint = (widget.start + widget.end) / 2
     drag(widget, (widget.start, midpoint))
+    view.nonmatching_widget.value = "Fade"
 
     points = view._plot.object.traverse(lambda element: element, specs=[hv.Points])
     assert len(points) == 2
@@ -77,24 +78,24 @@ def test_range_filter_fades_points_without_removing_them(dataset: xr.Dataset) ->
     assert inside.opts.get(backend="bokeh").kwargs["alpha"] == 1.0
 
 
-def test_nonmatching_points_are_faded_by_default(dataset: xr.Dataset) -> None:
+def test_nonmatching_points_are_hidden_by_default(dataset: xr.Dataset) -> None:
     view = FilterView(dataset, inspect_dataset(dataset))
     assert view.nonmatching_widget.options == ["Fade", "Hide"]
-    assert view.nonmatching_widget.value == "Fade"
+    assert view.nonmatching_widget.value == "Hide"
 
 
 def test_legend_clicks_hide_a_layer_rather_than_fading_it(dataset: xr.Dataset) -> None:
     view = FilterView(dataset, inspect_dataset(dataset))
+    view.nonmatching_widget.value = "Fade"
     figure = hv.render(view._plot.object, backend="bokeh")
     assert [legend.click_policy for legend in figure.legend] == ["hide"]
 
 
-def test_nonmatching_points_can_be_hidden(dataset: xr.Dataset) -> None:
+def test_nonmatching_points_are_hidden_from_the_plot(dataset: xr.Dataset) -> None:
     view = FilterView(dataset, inspect_dataset(dataset))
     frame = view._sample_frame()
     widget = view._filter_widgets["fuel_temperature"]
     drag(widget, (widget.start, (widget.start + widget.end) / 2))
-    view.nonmatching_widget.value = "Hide"
 
     points = view._plot.object.traverse(lambda element: element, specs=[hv.Points])
     assert len(points) == 1
@@ -384,6 +385,7 @@ def test_point_size_option_resizes_both_layers() -> None:
     dataset = _constant_field_dataset()
     view = FilterView(dataset, inspect_dataset(dataset))
     drag(view._filter_widgets["varies"], (0.0, 2.0))
+    view.nonmatching_widget.value = "Fade"
     drag(view.point_size_widget, 14)
 
     points = view._plot.object.traverse(lambda element: element, specs=[hv.Points])
@@ -446,6 +448,9 @@ def _rendered_text(view: FilterView) -> dict[str, list[tuple[str, str]]]:
 def test_text_size_option_scales_every_label_bold_and_upright() -> None:
     dataset = _constant_field_dataset()
     view = FilterView(dataset, inspect_dataset(dataset))
+    # Two layers, so the plot carries a legend to check as well.
+    drag(view._filter_widgets["varies"], (0.0, 2.0))
+    view.nonmatching_widget.value = "Fade"
     drag(view.text_size_widget, 16)
 
     text = _rendered_text(view)
