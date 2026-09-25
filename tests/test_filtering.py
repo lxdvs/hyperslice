@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from typing import Any
+
 import holoviews as hv
 import numpy as np
 import panel as pn
+import pytest
 import xarray as xr
 from bokeh.models import ColorBar
 from conftest import drag
@@ -15,9 +18,11 @@ from hyperslice.filtering import (
     CONTINUOUS_MARKER,
     NONMATCHING_ALPHA,
     PLAIN_MARKER,
+    SEARCH_SETTLE_MS,
     TICK_LIMIT,
     FilterView,
     distinct_values,
+    matches_search,
     most_interesting,
     text_fontsize,
     tick_stylesheet,
@@ -587,3 +592,146 @@ def test_most_interesting_prefers_outputs_then_distinct_counts() -> None:
     view = FilterView(dataset, schema)
     assert (view.variable, view.x_dim, view.y_dim) == ("fine", "coarse", "a")
     assert "coarse" not in view.y_widget.options.values()
+
+
+def _shown_filter_names(view: FilterView) -> list[str]:
+    """Names of the filters currently on screen, in grid order."""
+    shown = list(view._filter_grid.objects)
+    return [name for name, (cell, _texts) in view._filter_cells.items() if cell in shown]
+
+
+def test_matches_search_is_case_insensitive_and_blank_matches_all() -> None:
+    assert matches_search("", "anything")
+    assert matches_search("   ", "anything")
+    assert matches_search("TEMP", "fuel_temperature", "Input · Fuel temperature [K]")
+    assert matches_search("fuel temp", "fuel_temperature", "Input · Fuel temperature [K]")
+    assert not matches_search("pressure", "fuel_temperature", "Input · Fuel temperature [K]")
+
+
+def test_search_box_and_clear_button_follow_the_filters_heading(dataset: xr.Dataset) -> None:
+    view = FilterView(dataset, inspect_dataset(dataset))
+    assert view.search_widget.placeholder == "search..."
+    heading_row = next(
+        item for item in view.view[1] if isinstance(item, pn.Row) and view.search_widget in item
+    )
+    heading, search, clear = heading_row
+    assert isinstance(heading, pn.pane.Markdown)
+    assert "Input and output filters" in str(heading.object)
+    # Content-width heading so the box sits right after the text, not at the far edge.
+    assert heading.sizing_mode == "fixed"
+    assert search is view.search_widget
+    assert clear is view.clear_search_widget
+    assert clear.name == "Clear"
+
+
+def test_clear_button_empties_the_search_and_restores_every_filter(
+    dataset: xr.Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    view = FilterView(dataset, inspect_dataset(dataset))
+    everything = _shown_filter_names(view)
+    view.search_widget.value = "burnup"
+    assert _shown_filter_names(view) == ["burnup"]
+
+    view.clear_search_widget.clicks += 1
+    assert view.search_widget.value == ""
+    assert view.search_widget.value_input == ""
+    assert _shown_filter_names(view) == everything
+
+    # Clearing mid-typing also drops the pending settle wait.
+    document = _FakeDocument()
+    monkeypatch.setattr(type(pn.state), "curdoc", property(lambda _self: document))
+    view.search_widget.value_input = "pre"
+    assert len(document.pending) == 1
+    view.clear_search_widget.clicks += 1
+    assert document.pending == []
+    assert view._pending_search is None
+    assert _shown_filter_names(view) == everything
+
+
+def test_search_narrows_the_shown_filters_by_name_or_label(dataset: xr.Dataset) -> None:
+    view = FilterView(dataset, inspect_dataset(dataset))
+    everything = _shown_filter_names(view)
+    assert set(everything) == set(view._filter_widgets)
+
+    view.search_widget.value_input = "TEMP"
+    assert _shown_filter_names(view) == ["fuel_temperature", "peak_temperature"]
+
+    # Matches the variable name even though the label reads "Multiplication factor".
+    view.search_widget.value_input = "k_eff"
+    assert _shown_filter_names(view) == ["k_eff"]
+
+    view.search_widget.value_input = "no such filter"
+    assert _shown_filter_names(view) == []
+    (notice,) = view._filter_grid.objects
+    assert "No filters match `no such filter`" in notice.object
+
+    view.search_widget.value_input = ""
+    assert _shown_filter_names(view) == everything
+
+
+def test_hidden_filters_stay_active(dataset: xr.Dataset) -> None:
+    view = FilterView(dataset, inspect_dataset(dataset))
+    widget = view._filter_widgets["pressure"]
+    drag(widget, (widget.start, widget.start))
+    frame = view._sample_frame()
+    narrowed = int(view._included_mask(frame).sum())
+    assert 0 < narrowed < len(frame)
+
+    view.search_widget.value_input = "burnup"
+    assert _shown_filter_names(view) == ["burnup"]
+    assert int(view._included_mask(frame).sum()) == narrowed
+
+
+def test_search_survives_a_filter_rebuild(dataset: xr.Dataset) -> None:
+    view = FilterView(dataset, inspect_dataset(dataset))
+    view.search_widget.value_input = "pressure"
+    view.x_widget.value = "pressure"
+    assert _shown_filter_names(view) == ["pressure"]
+
+
+class _FakeDocument:
+    """Stand-in for a served Bokeh document recording timeout callbacks."""
+
+    def __init__(self) -> None:
+        self.pending: list[tuple[Any, int]] = []
+        self.removed: list[Any] = []
+
+    def add_timeout_callback(self, callback: Any, timeout_milliseconds: int) -> Any:
+        handle = (callback, timeout_milliseconds)
+        self.pending.append(handle)
+        return handle
+
+    def remove_timeout_callback(self, handle: Any) -> None:
+        self.pending.remove(handle)
+        self.removed.append(handle)
+
+    def fire(self) -> None:
+        for callback, _timeout in list(self.pending):
+            self.pending.remove((callback, _timeout))
+            callback()
+
+
+def test_typing_waits_for_the_text_to_settle(
+    dataset: xr.Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    view = FilterView(dataset, inspect_dataset(dataset))
+    everything = _shown_filter_names(view)
+    document = _FakeDocument()
+    monkeypatch.setattr(type(pn.state), "curdoc", property(lambda _self: document))
+
+    view.search_widget.value_input = "pre"
+    view.search_widget.value_input = "press"
+    # Still typing: nothing applied yet, and the earlier wait was cancelled.
+    assert _shown_filter_names(view) == everything
+    assert len(document.pending) == 1
+    assert len(document.removed) == 1
+    assert document.pending[0][1] == SEARCH_SETTLE_MS == 500
+
+    document.fire()
+    assert _shown_filter_names(view) == ["pressure"]
+    assert view._pending_search is None
+
+    # Enter applies immediately, without waiting out a pending timeout.
+    view.search_widget.value_input = "burn"
+    view.search_widget.value = "burn"
+    assert _shown_filter_names(view) == ["burnup"]
