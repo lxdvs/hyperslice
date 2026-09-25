@@ -245,7 +245,7 @@ class FilterView:
         self.nonmatching_widget = pn.widgets.RadioButtonGroup(
             name="Non-matching points",
             options=["Fade", "Hide"],
-            value="Fade",
+            value="Hide",
             button_type="default",
         )
         # Fixed height: a re-rendered plot that changes size would shift the
