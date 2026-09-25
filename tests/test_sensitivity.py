@@ -9,6 +9,7 @@ from hyperslice.sensitivity import (
     UNDEFINED,
     format_sensitivity,
     input_dimensions,
+    output_order,
     partial_derivative,
     relative_sensitivity,
     sensitivity_frame,
@@ -110,11 +111,26 @@ def test_sensitivity_frame_is_outputs_by_inputs(dataset: xr.Dataset) -> None:
     schema = inspect_dataset(dataset)
     point = _valid_point(dataset)
     frame = sensitivity_frame(dataset, schema, point)
-    assert list(frame.index) == ["k_eff", "peak_temperature"]
+    assert list(frame.index) == output_order(schema) == ["peak_temperature", "k_eff"]
     assert list(frame.columns) == input_dimensions(schema)
     assert frame.loc["k_eff", "pressure"] == pytest.approx(
         relative_sensitivity(dataset["k_eff"], "pressure", point)
     )
+
+
+def test_output_order_runs_from_most_distinct_values_to_fewest(dataset: xr.Dataset) -> None:
+    schema = inspect_dataset(dataset)
+    counts = [schema.variables[name].distinct_count for name in output_order(schema)]
+    assert counts == sorted(counts, reverse=True)
+    assert counts[0] > counts[-1]
+    tied = xr.Dataset(
+        {
+            "first": (("a", "b"), np.arange(6.0).reshape(3, 2)),
+            "second": (("a", "b"), np.arange(6.0).reshape(3, 2) + 10.0),
+        },
+        coords={"a": [0.0, 1.0, 2.0], "b": [0.0, 1.0]},
+    )
+    assert output_order(inspect_dataset(tied)) == ["first", "second"]
 
 
 def test_outputs_missing_an_input_report_no_derivative() -> None:

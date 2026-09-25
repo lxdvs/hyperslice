@@ -254,7 +254,7 @@ def test_sensitivity_table_reports_slopes_at_the_selected_point(dataset: xr.Data
     assert explorer._sensitivity_box.visible is True
     frame = explorer._sensitivities.frame
     assert frame is not None
-    assert list(frame.index) == ["k_eff", "peak_temperature"]
+    assert list(frame.index) == ["peak_temperature", "k_eff"]
     assert "drum_angle" in frame.columns
     point = explorer._selected_point
     k_eff = explorer.dataset["k_eff"]
@@ -262,7 +262,7 @@ def test_sensitivity_table_reports_slopes_at_the_selected_point(dataset: xr.Data
     assert frame.loc["k_eff", "pressure"] == pytest.approx(expected)
     strips = explorer._sensitivity_box[1]
     assert len(strips) == 2
-    html = strips[0][1].object
+    html = strips[list(frame.index).index("k_eff")][1].object
     assert "Control drum angle" in html
     assert f"{expected:.4g}" in html
     title = explorer._sensitivity_box[0].object
