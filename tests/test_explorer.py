@@ -252,16 +252,23 @@ def test_sensitivity_table_reports_slopes_at_the_selected_point(dataset: xr.Data
     )
 
     assert explorer._sensitivity_box.visible is True
-    table = explorer._sensitivity_table.object
-    assert list(table.index) == ["Multiplication factor", "Peak temperature"]
-    assert "Control drum angle" in table.columns
+    frame = explorer._sensitivities.frame
+    assert frame is not None
+    assert list(frame.index) == ["k_eff", "peak_temperature"]
+    assert "drum_angle" in frame.columns
     point = explorer._selected_point
     k_eff = explorer.dataset["k_eff"]
     expected = 0.002 * point["pressure"] / value_at(k_eff, point)
-    assert table.loc["Multiplication factor", "Pressure"] == f"{expected:.4g}"
-    assert "Relative sensitivities" in explorer._sensitivity_title.object
+    assert frame.loc["k_eff", "pressure"] == pytest.approx(expected)
+    strips = explorer._sensitivity_box[1]
+    assert len(strips) == 2
+    html = strips[0][1].object
+    assert "Control drum angle" in html
+    assert f"{expected:.4g}" in html
+    title = explorer._sensitivity_box[0].object
+    assert "Relative sensitivities" in title
     for dim in explorer.schema.variables[explorer.variable].dims:
-        assert f"`{dim}` =" in explorer._sensitivity_title.object
+        assert f"`{dim}` =" in title
 
 
 def test_tapping_a_filter_point_shows_its_sensitivities(dataset: xr.Dataset) -> None:
@@ -269,7 +276,7 @@ def test_tapping_a_filter_point_shows_its_sensitivities(dataset: xr.Dataset) -> 
     explorer.filter_view._on_point_tapped([11])
     assert explorer.view.active == 1
     assert explorer._sensitivity_box.visible is True
-    assert explorer._sensitivity_table.object is not None
+    assert explorer._sensitivities.frame is not None
 
 
 def test_highlight_colour_is_outside_viridis() -> None:

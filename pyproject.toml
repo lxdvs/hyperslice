@@ -69,6 +69,7 @@ module = [
   "hyperslice.filtering",
   "hyperslice.loading",
   "hyperslice.schema",
+  "hyperslice.sensitivity_view",
   "hyperslice.slicing",
   "hyperslice.status",
   "hyperslice.widgets",

@@ -20,7 +20,8 @@ from hyperslice.filtering import FilterView, watch_settled
 from hyperslice.loading import DatasetSource, load_dataset
 from hyperslice.plotting import build_plot
 from hyperslice.schema import DatasetSchema, inspect_dataset
-from hyperslice.sensitivity import labelled_frame, sensitivity_frame
+from hyperslice.sensitivity import sensitivity_frame
+from hyperslice.sensitivity_view import SensitivityPanel
 from hyperslice.slicing import SliceMethod, make_slice
 from hyperslice.status import SliceStatus, apply_strict_validity, classify_slice
 from hyperslice.widgets import reset_view_button
@@ -193,16 +194,8 @@ class Explorer:
             label="Download PNG", callback=self._png_download, filename="hyperslice.png"
         )
         self._selected_point: dict[str, Any] = {}
-        self._sensitivity_title = pn.pane.Markdown(margin=(0, 0, 4, 0))
-        self._sensitivity_table = pn.pane.DataFrame(
-            index=True, sizing_mode="stretch_width", margin=(0, 0, 8, 0)
-        )
-        self._sensitivity_box = pn.Column(
-            self._sensitivity_title,
-            self._sensitivity_table,
-            visible=False,
-            sizing_mode="stretch_width",
-        )
+        self._sensitivities = SensitivityPanel(self.schema)
+        self._sensitivity_box = self._sensitivities.view
         self._tap_stream: hv.streams.Tap | None = None
         self._current_slice: xr.DataArray | None = None
         self._current_status: SliceStatus | None = None
@@ -271,24 +264,24 @@ class Explorer:
             filter_view.select_point(point)
 
     def _update_sensitivities(self) -> None:
-        """Tabulate each output's relative sensitivity to each input at the selection."""
+        """Chart each output's relative sensitivity to each input at the selection."""
         if not self._selected_point:
-            self._sensitivity_box.visible = False
+            self._sensitivities.clear()
             return
         frame = sensitivity_frame(self.dataset, self.schema, self._selected_point)
-        self._sensitivity_table.object = labelled_frame(frame, self.schema)
         described = ", ".join(
             f"`{dim}` = {_coordinate_text(self._selected_point[dim])}"
             for dim in self.schema.coordinates
             if dim in self._selected_point
         )
-        self._sensitivity_title.object = (
-            f"### Relative sensitivities\nAt {described}. Each cell is the dimensionless "
-            "elasticity (x / y) dy/dx: the fractional change in the row output per "
-            "fractional change in the column input, differenced across neighbouring "
-            "samples on the grid."
+        self._sensitivities.update(
+            frame,
+            f"### Relative sensitivities\nAt {described}. Each value is the dimensionless "
+            "elasticity (x / y) dy/dx: the fractional change in the output per fractional "
+            "change in the input, differenced across neighbouring samples on the grid. "
+            "Bars scale to the largest magnitude for each output: red rises with the "
+            "input, blue falls.",
         )
-        self._sensitivity_box.visible = True
 
     def _selection_outline(self) -> hv.Bounds | None:
         """Rectangle around the selected design point's cell, if it is on screen."""
