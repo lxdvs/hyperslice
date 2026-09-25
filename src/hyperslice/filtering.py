@@ -53,6 +53,19 @@ def watch_settled(widget: pn.widgets.Widget, handler: Callable[[Any], None]) -> 
     widget.param.watch(handler, trait)
 
 
+#: Quiet time after the last keystroke before the filter search is applied.
+SEARCH_SETTLE_MS = 500
+
+
+def matches_search(query: str, *texts: str) -> bool:
+    """Whether the (case-insensitive) *query* occurs in any of *texts*.
+
+    A blank query matches everything.
+    """
+    needle = query.strip().casefold()
+    return not needle or any(needle in text.casefold() for text in texts)
+
+
 def text_fontsize(points: int) -> dict[str, str]:
     """HoloViews ``fontsize`` mapping putting every plot label at *points* pt.
 
@@ -217,6 +230,14 @@ class FilterView:
         self._axis_y_checks: dict[str, pn.widgets.Checkbox] = {}
         self._syncing_axes = False
         self._filter_grid = pn.GridBox(ncols=2, sizing_mode="stretch_width")
+        self.search_widget = pn.widgets.TextInput(
+            placeholder="search...", width=220, align="center", margin=(0, 4, 0, 10)
+        )
+        self.clear_search_widget = pn.widgets.Button(
+            name="Clear", width=70, align="center", margin=(0, 10, 0, 4)
+        )
+        self._pending_search: Any = None
+        self._filter_cells: dict[str, tuple[Any, tuple[str, ...]]] = {}
         self._filter_widgets: dict[str, pn.widgets.Widget] = {}
         self._missing_widgets: dict[str, pn.widgets.Checkbox] = {}
         self._saved_ranges: dict[str, Any] = {}
@@ -257,6 +278,9 @@ class FilterView:
         self.menu_toggle.param.watch(
             lambda event: setattr(self._menu, "visible", event.new), "value"
         )
+        self.search_widget.param.watch(self._on_search_typed, "value_input")
+        self.search_widget.param.watch(self._on_search_entered, "value")
+        self.clear_search_widget.on_click(lambda _event: self.clear_search())
         self._rebuild_axis_matrix()
         self._rebuild_filters()
         self._update()
@@ -494,7 +518,7 @@ class FilterView:
         frame = self._sample_frame()
         widgets: dict[str, pn.widgets.Widget] = {}
         missing_widgets: dict[str, pn.widgets.Checkbox] = {}
-        cells: list[Any] = []
+        cells: dict[str, tuple[Any, tuple[str, ...]]] = {}
         inputs = self._varying_dimensions()
         outputs = self._varying_outputs()
         for name in inputs + outputs:
@@ -517,7 +541,7 @@ class FilterView:
                 )
                 widget.param.watch(lambda _event: self._update(), "value")
                 widgets[name] = widget
-                cells.append(widget)
+                cells[name] = (widget, (name, label))
                 continue
             values = frame[name].to_numpy()
             missing_count = int((~np.isfinite(np.asarray(values, dtype=float))).sum())
@@ -544,7 +568,7 @@ class FilterView:
             watch_settled(widget, lambda _event: self._update())
             widgets[name] = widget
             if not missing_count:
-                cells.append(widget)
+                cells[name] = (widget, (name, label))
                 continue
             noun = "sample" if missing_count == 1 else "samples"
             checkbox = pn.widgets.Checkbox(
@@ -555,10 +579,63 @@ class FilterView:
             )
             checkbox.param.watch(lambda _event: self._update(), "value")
             missing_widgets[name] = checkbox
-            cells.append(pn.Column(widget, checkbox, sizing_mode="stretch_width"))
+            cell = pn.Column(widget, checkbox, sizing_mode="stretch_width")
+            cells[name] = (cell, (name, label))
         self._filter_widgets = widgets
         self._missing_widgets = missing_widgets
-        self._filter_grid.objects = cells
+        self._filter_cells = cells
+        self._apply_search()
+
+    def _on_search_typed(self, _event: Any) -> None:
+        """Apply the search once typing has paused, not on every keystroke.
+
+        Rebuilding the grid on each character would churn the layout while the
+        query is still being written. Served documents wait out the settle
+        time on the event loop; without a document there is nothing to wait on,
+        so the search applies at once.
+        """
+        document = pn.state.curdoc
+        if document is None:
+            self._apply_search()
+            return
+        if self._pending_search is not None:
+            document.remove_timeout_callback(self._pending_search)
+        self._pending_search = document.add_timeout_callback(self._apply_search, SEARCH_SETTLE_MS)
+
+    def _on_search_entered(self, event: Any) -> None:
+        """Enter (or a programmatic ``value``) applies the search without waiting."""
+        self.search_widget.value_input = event.new
+        self._apply_search()
+
+    def clear_search(self) -> None:
+        """Empty the search box and bring every filter back on screen."""
+        self.search_widget.value = ""
+        # Resetting the typed text re-arms the settle wait; cancel it and apply now.
+        self.search_widget.value_input = ""
+        document = pn.state.curdoc
+        if self._pending_search is not None and document is not None:
+            document.remove_timeout_callback(self._pending_search)
+        self._pending_search = None
+        self._apply_search()
+
+    def _apply_search(self) -> None:
+        """Show only the filters whose name or label contains the search text.
+
+        Hidden filters stay active: the search narrows what is on screen, not
+        which samples are included.
+        """
+        self._pending_search = None
+        query = self.search_widget.value_input or ""
+        shown = [
+            cell for cell, texts in self._filter_cells.values() if matches_search(query, *texts)
+        ]
+        if not shown and self._filter_cells:
+            shown = [
+                pn.pane.Markdown(
+                    f"No filters match `{query.strip()}`.", sizing_mode="stretch_width"
+                )
+            ]
+        self._filter_grid.objects = shown
 
     def _included_mask(self, frame: pd.DataFrame) -> np.ndarray:
         """Samples matching every active filter."""
@@ -784,7 +861,14 @@ class FilterView:
             self._reset_view,
             self._coverage,
             self._summary,
-            pn.pane.Markdown("### Input and output filters"),
+            pn.Row(
+                pn.pane.Markdown(
+                    "### Input and output filters", sizing_mode="fixed", align="center"
+                ),
+                self.search_widget,
+                self.clear_search_widget,
+                sizing_mode="stretch_width",
+            ),
             self._filter_grid,
             sizing_mode="stretch_both",
         )
