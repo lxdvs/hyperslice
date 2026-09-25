@@ -681,7 +681,10 @@ class Explorer:
             self._reset_view,
             self._sensitivity_box,
             self._slice_info,
-            sizing_mode="stretch_both",
+            # Width only: a height-constrained column shrinks the sensitivity
+            # panel once it outgrows the viewport and lays the slice
+            # information over its overflow.
+            sizing_mode="stretch_width",
         )
         return pn.Row(controls, main, sizing_mode="stretch_both", min_height=720)
 
