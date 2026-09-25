@@ -148,8 +148,9 @@ missing when required support is incomplete.
   ranked by how many distinct values each takes
 - Design-point selection linked across the filter and slicer views, clearing any
   filter that would hide the selected point
-- A local sensitivity table of every output against every input at the selected
-  design point, differenced across neighbouring grid samples
+- A local relative-sensitivity table of every output against every input at the
+  selected design point: dimensionless elasticities `(x / y) dy/dx`, differenced
+  across neighbouring grid samples
 - Long-form CSV and metadata-preserving NetCDF downloads
 - JSON-compatible application state
 - Lazy xarray opening and Dask-compatible named operations

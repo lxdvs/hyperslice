@@ -1,4 +1,10 @@
-"""Local sensitivities of every output to every input at one design point."""
+"""Local relative sensitivities of every output to every input at one design point.
+
+A relative (normalised) sensitivity is the elasticity ``(x / y) * dy/dx``: the
+fractional change in an output per fractional change in an input. Being
+dimensionless, the cells of one table compare directly across inputs and
+outputs with different units and magnitudes.
+"""
 
 from __future__ import annotations
 
@@ -11,9 +17,10 @@ import xarray as xr
 
 from hyperslice.schema import DatasetSchema
 
-#: Cell text for a derivative the grid cannot support — a categorical or
-#: single-valued axis, a dimension the output does not span, or a neighbourhood
-#: with missing values. Never rendered as a number, which would read as zero.
+#: Cell text for a sensitivity the grid cannot support — a categorical or
+#: single-valued axis, a dimension the output does not span, a neighbourhood
+#: with missing values, or an output of zero that no fraction can be taken of.
+#: Never rendered as a number, which would read as zero.
 UNDEFINED = "—"
 
 
@@ -75,33 +82,61 @@ def partial_derivative(data: xr.DataArray, dim: str, point: Mapping[str, Any]) -
     return float(slope[int(np.flatnonzero(order == index)[0])])
 
 
+def value_at(data: xr.DataArray, point: Mapping[str, Any]) -> float:
+    """Sample of *data* at *point*, or NaN if any of its dimensions is unpinned."""
+    indexers: dict[str, int] = {}
+    for dim in (str(name) for name in data.dims):
+        if dim not in point:
+            return float("nan")
+        index = _index_of(np.asarray(data.coords[dim].values), point[dim])
+        if index is None:
+            return float("nan")
+        indexers[dim] = index
+    return float(data.isel(indexers).values)
+
+
+def relative_sensitivity(data: xr.DataArray, dim: str, point: Mapping[str, Any]) -> float:
+    """Elasticity of *data* to *dim* at *point*: ``(x / y) * dy/dx``.
+
+    The partial derivative is scaled by the input and output values at the
+    point, so the result is the fractional change in the output per fractional
+    change in the input, independent of either quantity's units. An input at
+    exactly zero therefore has zero relative sensitivity, whatever its slope.
+    Returns NaN whenever the derivative is undefined or the output is zero,
+    where no fraction of it exists to compare against.
+    """
+    slope = partial_derivative(data, dim, point)
+    if not np.isfinite(slope):
+        return float("nan")
+    output = value_at(data, point)
+    if not np.isfinite(output) or output == 0:
+        return float("nan")
+    try:
+        position = float(point[dim])
+    except (TypeError, ValueError):
+        return float("nan")
+    return slope * position / output
+
+
 def sensitivity_frame(
     dataset: xr.Dataset, schema: DatasetSchema, point: Mapping[str, Any]
 ) -> pd.DataFrame:
-    """Partial derivative of every output (rows) by every input (columns)."""
+    """Relative sensitivity of every output (rows) to every input (columns)."""
     inputs = input_dimensions(schema)
     outputs = list(schema.variables)
-    values = [[partial_derivative(dataset[name], dim, point) for dim in inputs] for name in outputs]
+    values = [
+        [relative_sensitivity(dataset[name], dim, point) for dim in inputs] for name in outputs
+    ]
     return pd.DataFrame(values, index=outputs, columns=inputs, dtype=float)
 
 
-def format_derivative(value: float) -> str:
-    """Render one cell, marking derivatives the grid cannot support."""
+def format_sensitivity(value: float) -> str:
+    """Render one cell, marking sensitivities the grid cannot support."""
     return UNDEFINED if not np.isfinite(value) else f"{value:.4g}"
 
 
-def _units(units: str | None) -> str:
-    return units or "1"
-
-
 def labelled_frame(frame: pd.DataFrame, schema: DatasetSchema) -> pd.DataFrame:
-    """Relabel *frame* with long names and the units of each derivative."""
-    rows = {
-        name: f"{schema.variables[name].long_name} [{_units(schema.variables[name].units)}]"
-        for name in frame.index
-    }
-    columns = {
-        name: f"{schema.coordinates[name].long_name} [{_units(schema.coordinates[name].units)}]"
-        for name in frame.columns
-    }
-    return frame.rename(index=rows, columns=columns).map(format_derivative)
+    """Relabel *frame* with long names; relative sensitivities carry no units."""
+    rows = {name: schema.variables[name].long_name for name in frame.index}
+    columns = {name: schema.coordinates[name].long_name for name in frame.columns}
+    return frame.rename(index=rows, columns=columns).map(format_sensitivity)

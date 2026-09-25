@@ -8,6 +8,7 @@ from conftest import drag
 
 from hyperslice import Explorer
 from hyperslice.colors import HIGHLIGHT_COLOR, VIRIDIS
+from hyperslice.sensitivity import value_at
 
 
 def test_view_model_axis_variable_and_state(dataset: xr.Dataset) -> None:
@@ -252,9 +253,13 @@ def test_sensitivity_table_reports_slopes_at_the_selected_point(dataset: xr.Data
 
     assert explorer._sensitivity_box.visible is True
     table = explorer._sensitivity_table.object
-    assert list(table.index) == ["Multiplication factor [dimensionless]", "Peak temperature [K]"]
-    assert "Control drum angle [degree]" in table.columns
-    assert table.loc["Multiplication factor [dimensionless]", "Pressure [MPa]"] == "0.002"
+    assert list(table.index) == ["Multiplication factor", "Peak temperature"]
+    assert "Control drum angle" in table.columns
+    point = explorer._selected_point
+    k_eff = explorer.dataset["k_eff"]
+    expected = 0.002 * point["pressure"] / value_at(k_eff, point)
+    assert table.loc["Multiplication factor", "Pressure"] == f"{expected:.4g}"
+    assert "Relative sensitivities" in explorer._sensitivity_title.object
     for dim in explorer.schema.variables[explorer.variable].dims:
         assert f"`{dim}` =" in explorer._sensitivity_title.object
 
