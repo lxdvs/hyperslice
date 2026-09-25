@@ -94,12 +94,14 @@ def test_panel_shows_one_strip_per_output(dataset: xr.Dataset) -> None:
     assert panel.view.visible is True
     assert panel.frame is frame
     blocks = panel.view[1]
+    # Outputs run from the most distinct values to the fewest.
     assert [block[0][0].object for block in blocks] == [
-        "**Multiplication factor**",
         "**Peak temperature**",
+        "**Multiplication factor**",
     ]
     assert set(panel.sort_toggles) == {"k_eff", "peak_temperature"}
-    assert blocks[0][0][1] is panel.sort_toggles["k_eff"]
+    assert blocks[0][0][1] is panel.sort_toggles["peak_temperature"]
+    assert blocks[1][0][1] is panel.sort_toggles["k_eff"]
     labels = {name: schema.coordinates[name].long_name for name in frame.columns}
     grid = [labels[name] for name in frame.columns]
     assert [_shown_order(block) for block in blocks] == [grid, grid]
@@ -138,7 +140,7 @@ def test_sorting_by_one_output_orders_every_strip_the_same_way(dataset: xr.Datas
     panel.update(sensitivity_frame(dataset, schema, _valid_point() | {"burnup": 20.0}), "### T")
     assert panel.sort_by == "peak_temperature"
     assert panel.sort_toggles["peak_temperature"].value is True
-    assert panel.view[1][0][0][1] is panel.sort_toggles["k_eff"]
+    assert panel.view[1][0][0][1] is panel.sort_toggles["peak_temperature"]
 
     # Switching the active toggle off returns every strip to grid order.
     panel.sort_toggles["peak_temperature"].value = False

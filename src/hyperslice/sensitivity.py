@@ -37,6 +37,11 @@ def input_dimensions(schema: DatasetSchema) -> list[str]:
     ]
 
 
+def output_order(schema: DatasetSchema) -> list[str]:
+    """Outputs from the most distinct values to the fewest, ties in dataset order."""
+    return sorted(schema.variables, key=lambda name: -schema.variables[name].distinct_count)
+
+
 def _index_of(values: np.ndarray, target: Any) -> int | None:
     """Position of *target* in *values*: nearest for numbers, exact otherwise."""
     if values.dtype.kind in "iufc":
@@ -121,9 +126,14 @@ def relative_sensitivity(data: xr.DataArray, dim: str, point: Mapping[str, Any])
 def sensitivity_frame(
     dataset: xr.Dataset, schema: DatasetSchema, point: Mapping[str, Any]
 ) -> pd.DataFrame:
-    """Relative sensitivity of every output (rows) to every input (columns)."""
+    """Relative sensitivity of every output (rows) to every input (columns).
+
+    Rows run from the output taking the most distinct values to the fewest,
+    since the one with the most structure is usually the one being studied;
+    ties keep the dataset's order.
+    """
     inputs = input_dimensions(schema)
-    outputs = list(schema.variables)
+    outputs = output_order(schema)
     values = [
         [relative_sensitivity(dataset[name], dim, point) for dim in inputs] for name in outputs
     ]
