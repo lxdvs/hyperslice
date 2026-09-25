@@ -921,6 +921,8 @@ class FilterView:
             self._input_section,
             self._output_section,
             self._no_match,
-            sizing_mode="stretch_both",
+            # Width only, so the filter sections push content down rather
+            # than shrinking inside a viewport-high column.
+            sizing_mode="stretch_width",
         )
         return pn.Row(controls, main, sizing_mode="stretch_both", min_height=720)
