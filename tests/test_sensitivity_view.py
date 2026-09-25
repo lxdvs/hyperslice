@@ -38,7 +38,7 @@ def test_ordered_inputs_by_magnitude_puts_undefined_last() -> None:
 
 def test_render_strip_draws_signed_bars_about_a_centre_line() -> None:
     labels = {"a": "Alpha", "b": "Beta", "d": "Delta"}
-    html = render_strip(_row(), labels, by_magnitude=False)
+    html = render_strip(_row(), labels)
     cells = html.split('<div class="hs-sens-cell')[1:]
     assert len(cells) == 4
     assert "Alpha" in cells[0] and 'class="hs-sens-fill up" style="height: 12.5%"' in cells[0]
@@ -51,8 +51,8 @@ def test_render_strip_draws_signed_bars_about_a_centre_line() -> None:
     assert f"background: {NEGATIVE_COLOR}" in SENSITIVITY_STYLES
 
 
-def test_render_strip_sorted_leads_with_the_largest_magnitude() -> None:
-    html = render_strip(_row(), {}, by_magnitude=True)
+def test_render_strip_follows_the_given_order() -> None:
+    html = render_strip(_row(), {}, ordered_inputs(_row(), by_magnitude=True))
     order = [
         cell.split('<div class="hs-sens-input">')[1].split("<")[0]
         for cell in html.split('<div class="hs-sens-cell')[1:]
@@ -61,7 +61,7 @@ def test_render_strip_sorted_leads_with_the_largest_magnitude() -> None:
 
 
 def test_render_strip_escapes_labels() -> None:
-    html = render_strip(pd.Series({"a": 1.0}), {"a": "<b>&"}, by_magnitude=False)
+    html = render_strip(pd.Series({"a": 1.0}), {"a": "<b>&"})
     assert "&lt;b&gt;&amp;" in html
     assert "<b>&" not in html
 
@@ -76,7 +76,15 @@ def _valid_point() -> dict[str, float]:
     }
 
 
-def test_panel_shows_one_sortable_strip_per_output(dataset: xr.Dataset) -> None:
+def _shown_order(block: object) -> list[str]:
+    html = block[1].object  # type: ignore[index]
+    return [
+        cell.split('<div class="hs-sens-input">')[1].split("<")[0]
+        for cell in html.split('<div class="hs-sens-cell')[1:]
+    ]
+
+
+def test_panel_shows_one_strip_per_output(dataset: xr.Dataset) -> None:
     schema = inspect_dataset(dataset)
     panel = SensitivityPanel(schema)
     assert panel.view.visible is False
@@ -92,30 +100,47 @@ def test_panel_shows_one_sortable_strip_per_output(dataset: xr.Dataset) -> None:
     ]
     assert set(panel.sort_toggles) == {"k_eff", "peak_temperature"}
     assert blocks[0][0][1] is panel.sort_toggles["k_eff"]
-
-    def shown_order(block: object) -> list[str]:
-        html = block[1].object  # type: ignore[index]
-        return [
-            cell.split('<div class="hs-sens-input">')[1].split("<")[0]
-            for cell in html.split('<div class="hs-sens-cell')[1:]
-        ]
-
     labels = {name: schema.coordinates[name].long_name for name in frame.columns}
-    assert shown_order(blocks[0]) == [labels[name] for name in frame.columns]
-
-    panel.sort_toggles["k_eff"].value = True
-    row = frame.loc["k_eff"]
-    expected = [labels[name] for name in ordered_inputs(row, by_magnitude=True)]
-    assert shown_order(blocks[0]) == expected
-    assert expected != [labels[name] for name in frame.columns]
-    # The other output keeps grid order: sorting is per output.
-    assert shown_order(blocks[1]) == [labels[name] for name in frame.columns]
-
-    # A new selection keeps the sort choice for that output.
-    panel.update(sensitivity_frame(dataset, schema, _valid_point() | {"burnup": 20.0}), "### T")
-    assert panel.sort_toggles["k_eff"].value is True
-    assert panel.view[1][0][0][1] is panel.sort_toggles["k_eff"]
+    grid = [labels[name] for name in frame.columns]
+    assert [_shown_order(block) for block in blocks] == [grid, grid]
 
     panel.clear()
     assert panel.view.visible is False
     assert panel.frame is None
+
+
+def test_sorting_by_one_output_orders_every_strip_the_same_way(dataset: xr.Dataset) -> None:
+    schema = inspect_dataset(dataset)
+    panel = SensitivityPanel(schema)
+    frame = sensitivity_frame(dataset, schema, _valid_point())
+    panel.update(frame, "### Title")
+    blocks = panel.view[1]
+    labels = {name: schema.coordinates[name].long_name for name in frame.columns}
+    grid = [labels[name] for name in frame.columns]
+
+    panel.sort_toggles["k_eff"].value = True
+    by_k_eff = [labels[name] for name in ordered_inputs(frame.loc["k_eff"], by_magnitude=True)]
+    assert by_k_eff != grid
+    assert panel.sort_by == "k_eff"
+    assert [_shown_order(block) for block in blocks] == [by_k_eff, by_k_eff]
+
+    # Choosing another output's order switches the first toggle off.
+    panel.sort_toggles["peak_temperature"].value = True
+    by_peak = [
+        labels[name] for name in ordered_inputs(frame.loc["peak_temperature"], by_magnitude=True)
+    ]
+    assert by_peak != by_k_eff
+    assert panel.sort_by == "peak_temperature"
+    assert panel.sort_toggles["k_eff"].value is False
+    assert [_shown_order(block) for block in blocks] == [by_peak, by_peak]
+
+    # A new selection keeps the ordering output.
+    panel.update(sensitivity_frame(dataset, schema, _valid_point() | {"burnup": 20.0}), "### T")
+    assert panel.sort_by == "peak_temperature"
+    assert panel.sort_toggles["peak_temperature"].value is True
+    assert panel.view[1][0][0][1] is panel.sort_toggles["k_eff"]
+
+    # Switching the active toggle off returns every strip to grid order.
+    panel.sort_toggles["peak_temperature"].value = False
+    assert panel.sort_by is None
+    assert [_shown_order(block) for block in panel.view[1]] == [grid, grid]
