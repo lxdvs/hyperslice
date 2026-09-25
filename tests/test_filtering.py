@@ -16,11 +16,13 @@ from hyperslice.explorer import TAB_STYLES
 from hyperslice.filtering import (
     CONTINUOUS_COLOR,
     CONTINUOUS_MARKER,
+    FRAME_PADDING,
     NONMATCHING_ALPHA,
     PLAIN_MARKER,
     SEARCH_SETTLE_MS,
     TICK_LIMIT,
     FilterView,
+    axis_limits,
     distinct_values,
     matches_search,
     most_interesting,
@@ -740,3 +742,36 @@ def test_typing_waits_for_the_text_to_settle(
     view.search_widget.value_input = "burn"
     view.search_widget.value = "burn"
     assert _shown_filter_names(view) == ["burnup"]
+
+
+def test_axis_limits_pad_the_finite_values() -> None:
+    assert axis_limits([1.0, 3.0, np.nan]) == (1.0 - 0.2, 3.0 + 0.2)
+    assert axis_limits([5.0, 5.0]) == (5.0 - 0.5, 5.0 + 0.5)
+    assert axis_limits([0.0]) == (-1.0, 1.0)
+    assert axis_limits([np.nan]) is None
+    assert axis_limits([]) is None
+    assert axis_limits(["full", "partial"]) is None
+
+
+@pytest.mark.parametrize("mode", ["Hide", "Fade"])
+def test_default_bounds_frame_only_the_points_inside_the_filters(
+    dataset: xr.Dataset, mode: str
+) -> None:
+    view = FilterView(dataset, inspect_dataset(dataset))
+    view.nonmatching_widget.value = mode
+    frame = view._sample_frame()
+    widget = view._filter_widgets["fuel_temperature"]
+    drag(widget, (widget.start, (widget.start + widget.end) / 2))
+
+    inside = view._selected_rows
+    assert inside is not None
+    assert inside[view.x_dim].max() < frame[view.x_dim].max()
+    figure = hv.render(view._plot.object, backend="bokeh")
+    for axis_range, dim in ((figure.x_range, view.x_dim), (figure.y_range, view.y_dim)):
+        low, high = float(inside[dim].min()), float(inside[dim].max())
+        pad = (high - low) * FRAME_PADDING
+        assert axis_range.start == pytest.approx(low - pad)
+        assert axis_range.end == pytest.approx(high + pad)
+        # Bokeh's reset returns to these same bounds.
+        assert axis_range.reset_start in (None, axis_range.start)
+        assert axis_range.reset_end in (None, axis_range.end)
