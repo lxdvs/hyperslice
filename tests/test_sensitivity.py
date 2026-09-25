@@ -9,7 +9,6 @@ from hyperslice.sensitivity import (
     UNDEFINED,
     format_sensitivity,
     input_dimensions,
-    labelled_frame,
     partial_derivative,
     relative_sensitivity,
     sensitivity_frame,
@@ -132,16 +131,9 @@ def test_outputs_missing_an_input_report_no_derivative() -> None:
     assert np.isnan(partial_derivative(dataset["only_a"], "b", {"a": 1.0, "b": 0.0}))
 
 
-def test_cells_are_formatted_and_labelled_without_units(dataset: xr.Dataset) -> None:
+def test_unpinned_point_leaves_every_cell_undefined(dataset: xr.Dataset) -> None:
     schema = inspect_dataset(dataset)
-    frame = sensitivity_frame(dataset, schema, _valid_point(dataset))
-    display = labelled_frame(frame, schema)
-    assert "Multiplication factor" in display.index
-    assert "Control drum angle" in display.columns
-    assert not any("[" in label for label in [*display.index, *display.columns])
-    assert display.loc["Multiplication factor", "Pressure"] == "0.005115"
-    unpinned = labelled_frame(sensitivity_frame(dataset, schema, {}), schema)
-    assert (unpinned == UNDEFINED).all().all()
+    assert sensitivity_frame(dataset, schema, {}).isna().all().all()
 
 
 def test_format_sensitivity_marks_unusable_values() -> None:

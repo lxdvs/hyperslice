@@ -133,10 +133,3 @@ def sensitivity_frame(
 def format_sensitivity(value: float) -> str:
     """Render one cell, marking sensitivities the grid cannot support."""
     return UNDEFINED if not np.isfinite(value) else f"{value:.4g}"
-
-
-def labelled_frame(frame: pd.DataFrame, schema: DatasetSchema) -> pd.DataFrame:
-    """Relabel *frame* with long names; relative sensitivities carry no units."""
-    rows = {name: schema.variables[name].long_name for name in frame.index}
-    columns = {name: schema.coordinates[name].long_name for name in frame.columns}
-    return frame.rename(index=rows, columns=columns).map(format_sensitivity)
