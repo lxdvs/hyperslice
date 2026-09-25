@@ -207,10 +207,15 @@ class Explorer:
         self.filter_view = FilterView(
             self.dataset, self.schema, on_point_selected=self.open_design_point
         )
+        # Dynamic: only the active tab is rendered. Panel otherwise keeps the
+        # inactive tab in the page, stacked under the active one and hidden by
+        # opacity alone, so its content still adds to the page height and can
+        # show through wherever the active tab is shorter.
         self.view = pn.Tabs(
             ("Filter", self.filter_view.view),
             ("Slicer", self.slicer_view),
             active=0,
+            dynamic=True,
             stylesheets=[TAB_STYLES],
             sizing_mode="stretch_both",
         )
