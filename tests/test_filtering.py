@@ -4,6 +4,7 @@ import holoviews as hv
 import numpy as np
 import panel as pn
 import xarray as xr
+from bokeh.models import ColorBar
 from conftest import drag
 
 from hyperslice import Explorer
@@ -18,6 +19,7 @@ from hyperslice.filtering import (
     FilterView,
     distinct_values,
     most_interesting,
+    text_fontsize,
     tick_stylesheet,
 )
 from hyperslice.schema import inspect_dataset
@@ -410,7 +412,49 @@ def test_hamburger_menu_toggles_the_options_panel() -> None:
     view.menu_toggle.value = True
     assert view._menu.visible is True
     assert view.point_size_widget in view._menu
+    assert view.text_size_widget in view._menu
     assert view.color_levels_widget in view._menu
+
+
+def _rendered_text(view: FilterView) -> dict[str, list[tuple[str, str]]]:
+    """(size, style) of every text element in the rendered Bokeh figure."""
+    figure = hv.render(view._plot.object, backend="bokeh")
+    axes = [*figure.xaxis, *figure.yaxis]
+    return {
+        "title": [(figure.title.text_font_size, figure.title.text_font_style)],
+        "labels": [
+            (axis.axis_label_text_font_size, axis.axis_label_text_font_style) for axis in axes
+        ],
+        "ticks": [
+            (axis.major_label_text_font_size, axis.major_label_text_font_style) for axis in axes
+        ],
+        "legend": [
+            (legend.label_text_font_size, legend.label_text_font_style) for legend in figure.legend
+        ],
+        "colorbar": [
+            (bar.title_text_font_size, bar.title_text_font_style)
+            for bar in figure.select(type=ColorBar)
+        ],
+    }
+
+
+def test_text_size_option_scales_every_label_bold_and_upright() -> None:
+    dataset = _constant_field_dataset()
+    view = FilterView(dataset, inspect_dataset(dataset))
+    drag(view.text_size_widget, 16)
+
+    text = _rendered_text(view)
+    assert all(text.values())
+    assert text["title"] == [("18pt", "bold")]
+    for key in ("labels", "ticks", "legend", "colorbar"):
+        assert text[key], key
+        assert all(entry == ("16pt", "bold") for entry in text[key]), (key, text[key])
+
+
+def test_text_fontsize_scales_the_title_with_the_labels() -> None:
+    sizes = text_fontsize(11)
+    assert sizes["title"] == "13pt"
+    assert {sizes[key] for key in sizes if key != "title"} == {"11pt"}
 
 
 def test_tapping_a_point_reports_its_design_point() -> None:

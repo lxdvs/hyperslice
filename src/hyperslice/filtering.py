@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import panel as pn
 import xarray as xr
+from bokeh.models import ColorBar
 
 from hyperslice.colors import HIGHLIGHT_COLOR, VIRIDIS, banded
 from hyperslice.schema import DatasetSchema, axis_label
@@ -50,6 +51,44 @@ def watch_settled(widget: pn.widgets.Widget, handler: Callable[[Any], None]) -> 
     """
     trait = "value_throttled" if "value_throttled" in widget.param else "value"
     widget.param.watch(handler, trait)
+
+
+def text_fontsize(points: int) -> dict[str, str]:
+    """HoloViews ``fontsize`` mapping putting every plot label at *points* pt.
+
+    The title is a step larger so it still reads as the heading; the colorbar
+    title and ticks follow the axes so the whole figure scales together.
+    """
+    size = f"{points}pt"
+    return {
+        "title": f"{points + 2}pt",
+        "labels": size,
+        "ticks": size,
+        "legend": size,
+        "legend_title": size,
+        "clabel": size,
+        "cticks": size,
+    }
+
+
+def bold_text(plot: Any, element: Any) -> None:
+    """Bokeh hook setting every label bold and upright.
+
+    Bokeh's defaults italicise axis and colorbar titles; a plot with sizeable,
+    mixed-style text reads unevenly, so all text shares one weight and style.
+    """
+    figure = plot.state
+    if figure.title is not None:
+        figure.title.text_font_style = "bold"
+    for axis in (*figure.xaxis, *figure.yaxis):
+        axis.axis_label_text_font_style = "bold"
+        axis.major_label_text_font_style = "bold"
+    for legend in figure.legend:
+        legend.label_text_font_style = "bold"
+        legend.title_text_font_style = "bold"
+    for colorbar in figure.select(type=ColorBar):
+        colorbar.title_text_font_style = "bold"
+        colorbar.major_label_text_font_style = "bold"
 
 
 def option_map(names: list[str], continuous: Callable[[str], bool]) -> dict[str, str]:
@@ -169,6 +208,9 @@ class FilterView:
         self.color_levels_widget = pn.widgets.IntSlider(
             name="Colour divisions", start=2, end=50, step=1, value=8, disabled=True
         )
+        self.text_size_widget = pn.widgets.IntSlider(
+            name="Text size (pt)", start=8, end=24, step=1, value=11
+        )
         self.menu_toggle = pn.widgets.Toggle(name="☰", width=45, align="end")
         self._axis_matrix = pn.Column()
         self._axis_x_checks: dict[str, pn.widgets.Checkbox] = {}
@@ -195,6 +237,7 @@ class FilterView:
         self._message = pn.pane.Alert("", alert_type="danger", visible=False)
         self._menu = pn.Column(
             self.point_size_widget,
+            self.text_size_widget,
             self.continuous_color_widget,
             self.color_levels_widget,
             visible=False,
@@ -209,6 +252,7 @@ class FilterView:
         self.nonmatching_widget.param.watch(lambda _event: self._update(), "value")
         watch_settled(self.point_size_widget, lambda _event: self._update())
         watch_settled(self.color_levels_widget, lambda _event: self._update())
+        watch_settled(self.text_size_widget, lambda _event: self._update())
         self.continuous_color_widget.param.watch(self._on_continuous_color, "value")
         self.menu_toggle.param.watch(
             lambda event: setattr(self._menu, "visible", event.new), "value"
@@ -590,6 +634,8 @@ class FilterView:
                 xlabel=self._axis_label(self.x_dim),
                 ylabel=self._axis_label(self.y_dim),
                 title=f"{value_label} — all samples",
+                fontsize=text_fontsize(int(self.text_size_widget.value)),
+                hooks=[bold_text],
                 show_legend=True,
                 legend_position="right",
                 # Clicking a legend entry removes that layer outright. Bokeh's
