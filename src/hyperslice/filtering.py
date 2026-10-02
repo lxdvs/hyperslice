@@ -13,6 +13,7 @@ import xarray as xr
 from bokeh.models import ColorBar
 
 from hyperslice.colors import HIGHLIGHT_COLOR, VIRIDIS, banded
+from hyperslice.correlation import CORRELATION_STYLES, profile_frames, render_matrix
 from hyperslice.schema import DatasetSchema, axis_label
 from hyperslice.widgets import reset_view_button
 
@@ -299,6 +300,11 @@ class FilterView:
             visible=False,
             styles={"padding": "8px", "background": "#eef2f6", "border-radius": "6px"},
         )
+        self._correlation_title = pn.pane.Markdown(margin=(12, 10, 0, 10))
+        self._correlation = pn.pane.HTML(
+            stylesheets=[CORRELATION_STYLES], sizing_mode="stretch_width", margin=(0, 10, 12, 10)
+        )
+        self._correlation_key: tuple[str, bytes] | None = None
         self._selected_rows: pd.DataFrame | None = None
         self._selected_point: dict[str, Any] = {}
         self._resetting = False
@@ -775,10 +781,33 @@ class FilterView:
                 f"{len(frame):,} total samples"
             )
             self._update_coverage(frame, included)
+            self._update_correlation(frame, included)
             self._message.visible = False
         except Exception as exc:
             self._message.object = str(exc)
             self._message.visible = True
+
+    def _update_correlation(self, frame: pd.DataFrame, included: np.ndarray) -> None:
+        """Fit every output against every input over the samples inside the filters.
+
+        Axis, colour, and size changes redraw the plot without changing which
+        samples pass, so the fits are only redone when the sample set changes.
+        """
+        key = (self._grid_variable(), np.packbits(included).tobytes())
+        if key == self._correlation_key:
+            return
+        self._correlation_key = key
+        frames = profile_frames(frame.loc[included], self.schema)
+        count = int(included.sum())
+        self._correlation_title.object = (
+            "### Sensitivity within filters\n"
+            f"Lines through each mean response profile of the {count:,} samples inside the filters"
+        )
+        self._correlation.object = render_matrix(
+            frames,
+            {name: info.long_name for name, info in self.schema.coordinates.items()},
+            {name: info.long_name for name, info in self.schema.variables.items()},
+        )
 
     def _match_mask(self, frame: pd.DataFrame) -> np.ndarray | None:
         """Rows of *frame* at the selected design point, or None if nothing is selected."""
@@ -921,6 +950,8 @@ class FilterView:
             self._input_section,
             self._output_section,
             self._no_match,
+            self._correlation_title,
+            self._correlation,
             # Width only, so the filter sections push content down rather
             # than shrinking inside a viewport-high column.
             sizing_mode="stretch_width",
