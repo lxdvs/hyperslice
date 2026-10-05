@@ -16,6 +16,7 @@ from hyperslice.correlation import (
     band_color,
     bend_glyph,
     fit_profile,
+    informative,
     mean_profile,
     profile_frames,
     render_matrix,
@@ -112,26 +113,75 @@ def test_bend_glyph_only_for_readable_curvature() -> None:
     assert bend_glyph(float("nan"), 1.0) == ""
 
 
-def _frames() -> ProfileFrames:
-    a = np.array([1.0, 2.0, 3.0])
-    dataset = xr.Dataset(
-        {
-            "y": (("a", "b"), np.repeat(2.0 * a, 2).reshape(3, 2)),
-            "z": (("a", "b"), np.zeros((3, 2))),
-        },
-        coords={"a": a, "b": ["p", "q"]},
+def _frames(
+    sensitivity: dict[str, list[float]], nonlinearity: dict[str, list[float]]
+) -> ProfileFrames:
+    index = ["y", "z", "w"]
+    sens = pd.DataFrame(sensitivity, index=index, dtype=float)
+    curve = pd.DataFrame(nonlinearity, index=index, dtype=float)
+    return ProfileFrames(
+        sensitivity=sens,
+        nonlinearity=curve,
+        bend=curve * 0.0 + 1.0,
+        correlation=sens.clip(-1, 1),
+        levels=sens * 0.0 + 3,
     )
-    samples = dataset.to_dataframe().reset_index()
-    return profile_frames(samples, inspect_dataset(dataset))
+
+
+def _matrix() -> ProfileFrames:
+    return _frames(
+        # y responds to a; z is flat everywhere; w is undefined everywhere; b
+        # moves nothing; c moves nothing on average but bends y.
+        {
+            "a": [1.0, 0.0, np.nan],
+            "b": [np.nan, 0.0, np.nan],
+            "c": [0.0, 0.0, np.nan],
+        },
+        {
+            "a": [0.0, 0.0, np.nan],
+            "b": [np.nan, 0.0, np.nan],
+            "c": [1.0, 0.0, np.nan],
+        },
+    )
+
+
+def test_informative_cells_are_defined_and_nonzero_or_curved() -> None:
+    shown = informative(_matrix())
+    assert shown.loc["y"].tolist() == [True, False, True]
+    assert not shown.loc["z"].any() and not shown.loc["w"].any()
 
 
 def test_render_matrix_shows_both_values_and_marks_undefined() -> None:
-    html = render_matrix(_frames(), {"a": "<A>"}, {"y": "Why"})
+    frames = _frames({"a": [1.0, 0.5, 2.0]}, {"a": [0.0, 0.2, np.nan]})
+    frames.sensitivity.loc["w", "a"] = np.nan
+    frames.sensitivity["b"] = [0.5, 0.25, 1.0]
+    frames.nonlinearity["b"] = [0.0, 0.0, 0.0]
+    for frame in (frames.bend, frames.correlation, frames.levels):
+        frame["b"] = 1.0
+    html = render_matrix(frames, {"a": "<A>"}, {"y": "Why"})
     assert "+1" in html and "NL 0%" in html
     assert f"background: {band_color(1.0)}" in html
     assert f"background: {UNDEFINED_COLOR}" in html and UNDEFINED in html
     assert "&lt;A&gt;" in html and "<A>" not in html
     assert "<th>Why</th>" in html and "<th>z</th>" in html
+    assert "hs-corr-hidden" not in html
+
+
+def test_render_matrix_hides_flat_and_undefined_outputs_and_inputs() -> None:
+    html = render_matrix(_matrix(), {"a": "Alpha", "b": "Beta", "c": "Gamma"}, {"z": "Zed"})
+    table = html.split("</table>")[0]
+    assert "<th>y</th>" in table
+    assert "Zed" not in table and "<th>w</th>" not in table
+    assert "Alpha" in table and "Gamma" in table and "Beta" not in table
+    note = html.split('<div class="hs-corr-hidden">')[1]
+    assert "Outputs: Zed, w" in note and "Inputs: Beta" in note
+
+
+def test_render_matrix_with_nothing_to_show() -> None:
+    frames = _frames({"a": [0.0, np.nan, 0.0]}, {"a": [0.0, np.nan, np.nan]})
+    html = render_matrix(frames, {}, {})
+    assert "<table" not in html
+    assert "No output responds" in html and "Outputs: y, z, w" in html
 
 
 def test_frames_cover_numeric_inputs_and_order_outputs(dataset: xr.Dataset) -> None:

@@ -51,6 +51,11 @@ PROFILE_BINS = 10
 #: as flat, so rounding noise in a constant output never reads as curvature.
 NEGLIGIBLE_SPREAD = 1e-12
 
+#: Relative sensitivity below which a straight profile counts as flat. Far
+#: below any response worth reading, far above the rounding left in a profile
+#: of an output that ignores the input.
+NEGLIGIBLE_SENSITIVITY = 1e-12
+
 #: Marks for a profile curving upward and downward (the union and
 #: intersection signs, which read as cup and cap).
 BEND_UP = "\u222a"
@@ -192,6 +197,17 @@ def row_fractions(row: pd.Series) -> pd.Series:
     return values / largest
 
 
+def informative(frames: ProfileFrames) -> pd.DataFrame:
+    """Cells that say something: a defined sensitivity that is nonzero or curved.
+
+    A symmetric profile has no net slope yet bends strongly, so a cell with
+    zero sensitivity still counts when its nonlinearity does.
+    """
+    sensitivity = frames.sensitivity.abs()
+    curved = frames.nonlinearity.fillna(0.0) > 0
+    return sensitivity.notna() & ((sensitivity > NEGLIGIBLE_SENSITIVITY) | curved)
+
+
 def band_color(value: float) -> str:
     """Palette band for a fraction in [-1, 1]."""
     last = len(CORRELATION_PALETTE) - 1
@@ -271,6 +287,11 @@ CORRELATION_STYLES = """
   font-size: 11px;
   color: #536878;
 }
+.hs-corr-hidden {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #8a98a6;
+}
 .hs-corr-legend-bands {
   display: flex;
 }
@@ -311,11 +332,38 @@ def _cell(frames: ProfileFrames, output: str, dim: str, fraction: float, label: 
 def render_matrix(
     frames: ProfileFrames, input_labels: dict[str, str], output_labels: dict[str, str]
 ) -> str:
-    """HTML table of sensitivity and nonlinearity cells with a colour legend beneath."""
-    columns = [str(name) for name in frames.sensitivity.columns]
+    """HTML table of sensitivity and nonlinearity cells with a colour legend beneath.
+
+    Outputs and inputs whose every cell is undefined or flat are left out, and
+    named in a note beneath, so the table holds only responses worth reading.
+    """
+    shown = informative(frames)
+    kept_rows = [str(name) for name in shown.index if shown.loc[name].any()]
+    columns = [str(name) for name in shown.columns if shown[name].any()]
+    hidden_rows = [str(name) for name in shown.index if str(name) not in kept_rows]
+    hidden_columns = [str(name) for name in shown.columns if str(name) not in columns]
+    notes = [
+        f"{kind}: {', '.join(escape(labels.get(name, name)) for name in names)}"
+        for kind, names, labels in (
+            ("Outputs", hidden_rows, output_labels),
+            ("Inputs", hidden_columns, input_labels),
+        )
+        if names
+    ]
+    hidden = (
+        '<div class="hs-corr-hidden">Hidden, with no defined or nonzero sensitivity within '
+        f"the filters: {'; '.join(notes)}</div>"
+        if notes
+        else ""
+    )
+    if not kept_rows:
+        return (
+            '<div class="hs-corr-hidden">No output responds to any input within the filters.'
+            f"</div>{hidden}"
+        )
     header = "".join(f"<th>{escape(input_labels.get(name, name))}</th>" for name in columns)
     rows = []
-    for output in (str(name) for name in frames.sensitivity.index):
+    for output in kept_rows:
         output_label = escape(output_labels.get(output, output))
         fractions = row_fractions(frames.sensitivity.loc[output])
         cells = "".join(
@@ -342,5 +390,5 @@ def render_matrix(
         '<div class="hs-corr-wrap"><table class="hs-corr">'
         f"<thead><tr><th></th>{header}</tr></thead>"
         f"<tbody>{''.join(rows)}</tbody>"
-        f"</table></div>{legend}"
+        f"</table></div>{legend}{hidden}"
     )
