@@ -5,7 +5,7 @@ import pytest
 import xarray as xr
 
 from hyperslice.exceptions import DatasetSchemaError
-from hyperslice.schema import inspect_dataset
+from hyperslice.schema import cardinality_table, inspect_dataset
 
 
 def test_schema_metadata_and_irregular_grid(dataset: xr.Dataset) -> None:
@@ -88,17 +88,33 @@ def test_high_cardinality_outputs_are_annotated() -> None:
     schema = inspect_dataset(dataset)
     independent = schema.variables["independent"]
     assert independent.high_cardinality is True
-    assert independent.distinct_count == 6
+    assert independent.cardinality == 6
     assert independent.distinct_ratio == 1.0
     bucketed = schema.variables["bucketed"]
     assert bucketed.high_cardinality is False
-    assert bucketed.distinct_count == 2
+    assert bucketed.cardinality == 2
     assert bucketed.distinct_ratio == pytest.approx(1 / 3)
+
+
+def test_cardinality_table_lists_outputs_highest_first() -> None:
+    dataset = xr.Dataset(
+        {
+            "bucketed": (("a", "b"), np.array([[1.0, 1.0, 1.0], [2.0, 2.0, np.nan]])),
+            "independent": (("a", "b"), np.arange(6.0).reshape(2, 3)),
+        },
+        coords={"a": [0, 1], "b": [1, 2, 3]},
+    )
+    lines = cardinality_table(inspect_dataset(dataset)).splitlines()
+    assert lines[0].split() == ["Output", "Cardinality", "Distinct", "share", "Dimensions"]
+    assert lines[2].split() == ["independent", "6", "100.0%", "a[2]", "x", "b[3]"]
+    # Missing values are not counted: two distinct of five present.
+    assert lines[3].split() == ["bucketed", "2", "40.0%", "a[2]", "x", "b[3]"]
+    assert len(lines) == 4
 
 
 def test_constant_output_is_never_high_cardinality() -> None:
     schema = inspect_dataset(_constant_dataset())
     assert schema.variables["fixed"].high_cardinality is False
-    assert schema.variables["fixed"].distinct_count == 1
-    assert schema.variables["all_missing"].distinct_count == 0
+    assert schema.variables["fixed"].cardinality == 1
+    assert schema.variables["all_missing"].cardinality == 0
     assert schema.variables["all_missing"].high_cardinality is False

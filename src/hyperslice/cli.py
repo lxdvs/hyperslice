@@ -11,6 +11,7 @@ import typer
 
 from hyperslice.exceptions import HyperSliceError
 from hyperslice.explorer import Explorer
+from hyperslice.schema import cardinality_table
 
 app = typer.Typer(help="Explore rectilinear N-dimensional xarray datasets.")
 
@@ -25,6 +26,13 @@ def main(
     port: Annotated[int, typer.Option("--port")] = 0,
     address: Annotated[str, typer.Option("--address")] = "localhost",
     show: Annotated[bool, typer.Option("--show/--no-browser")] = True,
+    show_cardinality: Annotated[
+        bool,
+        typer.Option(
+            "--show-cardinality",
+            help="Print each output's cardinality (distinct values) before serving.",
+        ),
+    ] = False,
 ) -> None:
     """Launch a local HyperSlice server."""
     logging.basicConfig(level=logging.INFO)
@@ -39,6 +47,8 @@ def main(
     except HyperSliceError as exc:
         typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(2) from exc
+    if show_cardinality:
+        typer.echo(cardinality_table(explorer.schema))
     typer.echo(f"Serving HyperSlice for {dataset}")
     pn.serve(
         {"/": explorer.view},

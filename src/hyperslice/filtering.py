@@ -174,7 +174,7 @@ def distinct_values(schema: DatasetSchema, name: str) -> int:
     """Number of distinct values *name* takes: sampled levels for an input."""
     if name in schema.coordinates:
         return int(schema.coordinates[name].size)
-    return int(schema.variables[name].distinct_count)
+    return int(schema.variables[name].cardinality)
 
 
 def most_interesting(schema: DatasetSchema, names: list[str]) -> list[str]:

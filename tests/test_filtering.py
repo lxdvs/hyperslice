@@ -567,7 +567,7 @@ def test_filter_view_opens_on_the_most_interesting_outputs(dataset: xr.Dataset) 
     view = FilterView(dataset, schema)
     by_distinct = sorted(
         (name for name, info in schema.variables.items() if not info.constant),
-        key=lambda name: schema.variables[name].distinct_count,
+        key=lambda name: schema.variables[name].cardinality,
         reverse=True,
     )
     # Z takes the output with the most distinct values, X the next output, and
@@ -582,7 +582,7 @@ def test_filter_view_opens_on_the_most_interesting_outputs(dataset: xr.Dataset) 
     assert len({view.variable, view.x_dim, view.y_dim}) == 3
 
 
-def test_most_interesting_prefers_outputs_then_distinct_counts() -> None:
+def test_most_interesting_prefers_outputs_then_cardinalitys() -> None:
     dataset = xr.Dataset(
         {
             "coarse": (("a", "b"), np.repeat([[0.0, 1.0]], 4, axis=0)),

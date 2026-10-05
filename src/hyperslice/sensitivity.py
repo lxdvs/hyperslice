@@ -39,7 +39,7 @@ def input_dimensions(schema: DatasetSchema) -> list[str]:
 
 def output_order(schema: DatasetSchema) -> list[str]:
     """Outputs from the most distinct values to the fewest, ties in dataset order."""
-    return sorted(schema.variables, key=lambda name: -schema.variables[name].distinct_count)
+    return sorted(schema.variables, key=lambda name: -schema.variables[name].cardinality)
 
 
 def _index_of(values: np.ndarray, target: Any) -> int | None:

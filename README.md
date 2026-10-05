@@ -29,6 +29,9 @@ hyperslice examples/data/synthetic_sweep.zarr --variable peak_temperature \
 
 Use `--address`, `--port`, and `--no-browser` for server control.
 
+Add `--show-cardinality` to print, before serving, every output's cardinality: the
+number of distinct values it takes across the dataset, highest first.
+
 ## Python and notebook use
 
 ```python

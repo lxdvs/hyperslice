@@ -29,7 +29,12 @@ class CoordinateInfo:
 
 @dataclass(frozen=True)
 class VariableInfo:
-    """Metadata for a plottable response variable."""
+    """Metadata for a plottable response variable.
+
+    ``cardinality`` is the number of distinct values the output takes across
+    the dataset, ignoring missing ones; ``distinct_ratio`` is that count as a
+    share of the values present.
+    """
 
     name: str
     dims: tuple[str, ...]
@@ -40,7 +45,7 @@ class VariableInfo:
     fill_value: Any | None
     constant: bool
     constant_value: Any | None
-    distinct_count: int
+    cardinality: int
     distinct_ratio: float
     high_cardinality: bool
 
@@ -143,7 +148,7 @@ def inspect_dataset(dataset: xr.Dataset) -> DatasetSchema:
             continue
         values = np.asarray(data.values)
         constant, constant_value = _constant_summary(values)
-        distinct_count, distinct_ratio, high_cardinality = _cardinality(values)
+        cardinality, distinct_ratio, high_cardinality = _cardinality(values)
         variables[name] = VariableInfo(
             name=name,
             dims=tuple(data.dims),
@@ -154,7 +159,7 @@ def inspect_dataset(dataset: xr.Dataset) -> DatasetSchema:
             fill_value=attrs.get("_FillValue", attrs.get("missing_value")),
             constant=constant,
             constant_value=constant_value,
-            distinct_count=distinct_count,
+            cardinality=cardinality,
             distinct_ratio=distinct_ratio,
             high_cardinality=high_cardinality,
         )
@@ -163,6 +168,41 @@ def inspect_dataset(dataset: xr.Dataset) -> DatasetSchema:
             "Dataset has no plottable numeric variables with at least two dimensions."
         )
     return DatasetSchema(coordinates, variables, tuple(statuses), dict(dataset.attrs))
+
+
+def cardinality_table(schema: DatasetSchema) -> str:
+    """Plain-text table of every output's cardinality, highest first.
+
+    Ties keep the dataset's order, matching how the views rank outputs.
+    """
+    outputs = sorted(schema.variables.values(), key=lambda info: -info.cardinality)
+    header = ("Output", "Cardinality", "Distinct share", "Dimensions")
+    rows = [
+        (
+            info.name,
+            f"{info.cardinality:,}",
+            f"{info.distinct_ratio:.1%}",
+            " x ".join(f"{dim}[{size}]" for dim, size in zip(info.dims, info.shape, strict=True)),
+        )
+        for info in outputs
+    ]
+    widths = [max(len(row[column]) for row in [header, *rows]) for column in range(len(header))]
+
+    def line(cells: tuple[str, ...]) -> str:
+        # Name left, numbers right, dimensions left and unpadded at the end.
+        return "  ".join(
+            (
+                cell.ljust(width)
+                if column == 0
+                else cell
+                if column == len(cells) - 1
+                else cell.rjust(width)
+            )
+            for column, (cell, width) in enumerate(zip(cells, widths, strict=True))
+        )
+
+    rule = "  ".join("-" * width for width in widths)
+    return "\n".join([line(header), rule, *(line(row) for row in rows)])
 
 
 def axis_label(dataset: xr.Dataset, name: str) -> str:

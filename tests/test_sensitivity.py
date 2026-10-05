@@ -120,7 +120,7 @@ def test_sensitivity_frame_is_outputs_by_inputs(dataset: xr.Dataset) -> None:
 
 def test_output_order_runs_from_most_distinct_values_to_fewest(dataset: xr.Dataset) -> None:
     schema = inspect_dataset(dataset)
-    counts = [schema.variables[name].distinct_count for name in output_order(schema)]
+    counts = [schema.variables[name].cardinality for name in output_order(schema)]
     assert counts == sorted(counts, reverse=True)
     assert counts[0] > counts[-1]
     tied = xr.Dataset(

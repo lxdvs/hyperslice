@@ -140,7 +140,7 @@ def test_frames_cover_numeric_inputs_and_order_outputs(dataset: xr.Dataset) -> N
     frames = profile_frames(frame, schema)
     assert list(frames.sensitivity.index) == [
         name
-        for name in sorted(schema.variables, key=lambda n: -schema.variables[n].distinct_count)
+        for name in sorted(schema.variables, key=lambda n: -schema.variables[n].cardinality)
         if name in frame.columns
     ]
     assert all(not schema.coordinates[name].categorical for name in frames.sensitivity.columns)
