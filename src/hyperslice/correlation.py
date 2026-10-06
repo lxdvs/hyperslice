@@ -208,6 +208,53 @@ def informative(frames: ProfileFrames) -> pd.DataFrame:
     return sensitivity.notna() & ((sensitivity > NEGLIGIBLE_SENSITIVITY) | curved)
 
 
+#: Typographic minus and times for equations (escaped, as they read like ASCII).
+MINUS_SIGN = "\u2212"
+TIMES_SIGN = "\u00d7"
+
+
+@dataclass(frozen=True)
+class LineFit:
+    """Least-squares line ``y = slope * x + intercept`` through *count* points."""
+
+    slope: float
+    intercept: float
+    r_squared: float
+    count: int
+
+    def equation(self) -> str:
+        """The line as ``y = a·x + b``, with its fit quality."""
+        sign = MINUS_SIGN if self.intercept < 0 else "+"
+        quality = f"R² = {self.r_squared:.3f}" if np.isfinite(self.r_squared) else "R² —"
+        return (
+            f"y = {self.slope:.4g}·x {sign} {abs(self.intercept):.4g} "
+            f"({quality}, n = {self.count:,})"
+        )
+
+
+def best_fit(x: np.ndarray, y: np.ndarray) -> LineFit | None:
+    """Least-squares line through the points with a value on both axes.
+
+    None when either side is not numeric, fewer than two such points remain,
+    or *x* does not vary, so no single line is determined. R² is NaN when *y*
+    does not vary, since there is no variation for the line to explain.
+    """
+    try:
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+    except (TypeError, ValueError):
+        return None
+    finite = np.isfinite(x) & np.isfinite(y)
+    x, y = x[finite], y[finite]
+    if x.size < 2 or float(x.std()) == 0:
+        return None
+    slope, intercept = np.polyfit(x, y, 1)
+    total = float(np.sum((y - y.mean()) ** 2))
+    residual = float(np.sum((y - (slope * x + intercept)) ** 2))
+    r_squared = 1.0 - residual / total if total > 0 else float("nan")
+    return LineFit(float(slope), float(intercept), r_squared, int(x.size))
+
+
 def band_color(value: float) -> str:
     """Palette band for a fraction in [-1, 1]."""
     last = len(CORRELATION_PALETTE) - 1
@@ -261,6 +308,17 @@ CORRELATION_STYLES = """
   border-radius: 3px;
   color: #1f2d3a;
 }
+.hs-corr td[data-output] {
+  cursor: pointer;
+}
+.hs-corr td[data-output]:hover {
+  outline: 2px solid #536878;
+  outline-offset: -2px;
+}
+.hs-corr td.selected {
+  outline: 3px solid #17324d;
+  outline-offset: -3px;
+}
 .hs-corr td.dark {
   color: #ffffff;
 }
@@ -306,11 +364,16 @@ def _format(value: float, pattern: str) -> str:
     return format(value, pattern) if np.isfinite(value) else UNDEFINED
 
 
-def _cell(frames: ProfileFrames, output: str, dim: str, fraction: float, label: str) -> str:
+def _cell(
+    frames: ProfileFrames, output: str, dim: str, fraction: float, label: str, selected: bool
+) -> str:
+    # Data attributes name the pair a click on the cell asks to plot.
+    target = f'data-output="{escape(output)}" data-input="{escape(dim)}"'
+    picked = " selected" if selected else ""
     sensitivity = float(frames.sensitivity.at[output, dim])
     if not np.isfinite(sensitivity):
         return (
-            f'<td class="undefined" style="background: {UNDEFINED_COLOR}" '
+            f'<td class="undefined{picked}" {target} style="background: {UNDEFINED_COLOR}" '
             f'title="{label}: undefined">{UNDEFINED}</td>'
         )
     nonlinearity = float(frames.nonlinearity.at[output, dim])
@@ -318,11 +381,11 @@ def _cell(frames: ProfileFrames, output: str, dim: str, fraction: float, label: 
     glyph = bend_glyph(nonlinearity, float(frames.bend.at[output, dim]))
     correlation = _format(float(frames.correlation.at[output, dim]), "+.2f")
     levels = int(frames.levels.at[output, dim])
-    classes = ' class="dark"' if _dark(fraction) else ""
+    classes = ("dark" if _dark(fraction) else "") + picked
     return (
-        f'<td{classes} style="background: {band_color(fraction)}" '
+        f'<td class="{classes.strip()}" {target} style="background: {band_color(fraction)}" '
         f'title="{label}: sensitivity {sensitivity:+.4g}, nonlinearity {curve}{glyph}, '
-        f'r {correlation}, {levels} profile levels">'
+        f'r {correlation}, {levels} profile levels · click to plot">'
         f'<span class="hs-corr-slope">{sensitivity:+.3g}</span>'
         f'<span class="hs-corr-nonlinear">NL {curve}{glyph}</span>'
         "</td>"
@@ -330,12 +393,16 @@ def _cell(frames: ProfileFrames, output: str, dim: str, fraction: float, label: 
 
 
 def render_matrix(
-    frames: ProfileFrames, input_labels: dict[str, str], output_labels: dict[str, str]
+    frames: ProfileFrames,
+    input_labels: dict[str, str],
+    output_labels: dict[str, str],
+    selected: tuple[str, str] | None = None,
 ) -> str:
     """HTML table of sensitivity and nonlinearity cells with a colour legend beneath.
 
     Outputs and inputs whose every cell is undefined or flat are left out, and
     named in a note beneath, so the table holds only responses worth reading.
+    The cell for *selected*, an ``(output, input)`` pair, is outlined.
     """
     shown = informative(frames)
     kept_rows = [str(name) for name in shown.index if shown.loc[name].any()]
@@ -373,6 +440,7 @@ def render_matrix(
                 dim,
                 float(fractions[dim]),
                 f"{output_label} vs {escape(input_labels.get(dim, dim))}",
+                selected == (output, dim),
             )
             for dim in columns
         )

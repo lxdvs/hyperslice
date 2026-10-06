@@ -13,7 +13,15 @@ import xarray as xr
 from bokeh.models import ColorBar
 
 from hyperslice.colors import HIGHLIGHT_COLOR, VIRIDIS, banded
-from hyperslice.correlation import CORRELATION_STYLES, profile_frames, render_matrix
+from hyperslice.correlation import (
+    MINUS_SIGN,
+    TIMES_SIGN,
+    ProfileFrames,
+    best_fit,
+    profile_frames,
+    render_matrix,
+)
+from hyperslice.correlation_view import SensitivityMatrix
 from hyperslice.schema import DatasetSchema, axis_label
 from hyperslice.widgets import reset_view_button
 
@@ -21,6 +29,10 @@ from hyperslice.widgets import reset_view_button
 #: background against the matching cloud, high enough to keep the shape of the
 #: sampled space visible — filtering narrows attention, it does not delete data.
 NONMATCHING_ALPHA = 0.15
+
+#: Best-fit line drawn by Correlate: dark enough to read over every Viridis
+#: colour, and distinct from the magenta selection outline.
+FIT_COLOR = "#111111"
 
 #: Label styling for inputs and high-cardinality outputs — every sample an
 #: independent value rather than one of a few shared levels.
@@ -308,17 +320,23 @@ class FilterView:
             styles={"padding": "8px", "background": "#eef2f6", "border-radius": "6px"},
         )
         self._correlation_title = pn.pane.Markdown(margin=(12, 10, 0, 10))
-        self._correlation = pn.pane.HTML(
-            stylesheets=[CORRELATION_STYLES], sizing_mode="stretch_width", margin=(0, 10, 12, 10)
+        self._correlation = SensitivityMatrix(
+            on_select=self.correlate, sizing_mode="stretch_width", margin=(0, 10, 12, 10)
         )
         self._correlation_key: tuple[str, bytes] | None = None
+        self._profile_frames: ProfileFrames | None = None
+        self._fit_summary = ""
+        self.correlate_widget = pn.widgets.Toggle(
+            name="Correlate", icon="chart-line", button_type="primary", button_style="outline"
+        )
         self._selected_rows: pd.DataFrame | None = None
         self._selected_point: dict[str, Any] = {}
-        self._resetting = False
+        self._updates_held = False
         self.variable_widget.param.watch(self._on_variable, "value")
         self.x_widget.param.watch(self._on_x, "value")
         self.y_widget.param.watch(lambda _event: self._update(), "value")
         self.nonmatching_widget.param.watch(lambda _event: self._update(), "value")
+        self.correlate_widget.param.watch(lambda _event: self._update(), "value")
         watch_settled(self.point_size_widget, lambda _event: self._update())
         watch_settled(self.color_levels_widget, lambda _event: self._update())
         watch_settled(self.text_size_widget, lambda _event: self._update())
@@ -632,7 +650,7 @@ class FilterView:
         return included
 
     def _update(self) -> None:
-        if self._resetting:
+        if self._updates_held:
             return
         try:
             frame = self._sample_frame()
@@ -679,6 +697,9 @@ class FilterView:
                     tools=["hover"],
                 )
                 plot = faded * selected
+            fit_note = self._fit_line(inside)
+            if isinstance(fit_note, hv.Curve):
+                plot = plot * fit_note
             highlight = self._selection_overlay(frame, size)
             if highlight is not None:
                 plot = plot * highlight
@@ -702,17 +723,19 @@ class FilterView:
                 fontsize=text_fontsize(int(self.text_size_widget.value)),
                 hooks=[bold_text],
                 show_legend=True,
-                legend_position="right",
+                # Below the plot while a fit is drawn: its equation is too long
+                # to sit beside the plot without squeezing it.
+                legend_position="bottom" if isinstance(fit_note, hv.Curve) else "right",
                 # Clicking a legend entry removes that layer outright. Bokeh's
                 # default is to mute it, which fades it to the same treatment
                 # non-matching points already carry — two states, one look.
-                legend_opts={"click_policy": "hide"},
+                legend_opts={"click_policy": "hide", "spacing": 24},
             )
             self._summary.object = (
                 f"**{int(included.sum()):,} inside filters** · "
                 f"{int((~included).sum()):,} outside filters · "
                 f"{len(frame):,} total samples"
-            )
+            ) + (f"  \n{fit_note}" if isinstance(fit_note, str) else self._fit_summary)
             self._update_coverage(frame, included)
             self._update_correlation(frame, included)
             self._message.visible = False
@@ -720,26 +743,79 @@ class FilterView:
             self._message.object = str(exc)
             self._message.visible = True
 
+    def _fit_line(self, inside: pd.DataFrame) -> hv.Curve | str | None:
+        """The best-fit line through the plotted points, when Correlate is on.
+
+        Returns the line to overlay, a note saying why none can be drawn, or
+        None when Correlate is off. The equation goes in the line's legend
+        entry and, spelled out with the axis names, under the plot.
+        """
+        self._fit_summary = ""
+        if not self.correlate_widget.value:
+            return None
+        fit = best_fit(inside[self.x_dim].to_numpy(), inside[self.y_dim].to_numpy())
+        if fit is None:
+            return (
+                "Correlate: no line, since fewer than two plotted points have numeric "
+                "values on both axes, or the X values do not vary."
+            )
+        x = np.asarray(inside[self.x_dim].to_numpy(), dtype=float)
+        y = np.asarray(inside[self.y_dim].to_numpy(), dtype=float)
+        x = x[np.isfinite(x) & np.isfinite(y)]
+        ends = np.array([x.min(), x.max()])
+        self._fit_summary = (
+            f"  \nBest fit: **{self._axis_label(self.y_dim)}** = {fit.slope:.4g} {TIMES_SIGN} "
+            f"**{self._axis_label(self.x_dim)}** {MINUS_SIGN if fit.intercept < 0 else '+'} "
+            f"{abs(fit.intercept):.4g} · R² = {fit.r_squared:.3f} · {fit.count:,} points"
+        )
+        return hv.Curve(
+            (ends, fit.slope * ends + fit.intercept),
+            kdims=[self.x_dim],
+            vdims=[self.y_dim],
+            label=f"Best fit: {fit.equation()}",
+        ).opts(color=FIT_COLOR, line_width=2.5, line_dash="dashed")
+
+    def correlate(self, output: str, dim: str) -> None:
+        """Plot *output* against input *dim* and draw the line through them.
+
+        Z and every filter are left as they are, so the line runs through the
+        same samples the sensitivity cell was computed from.
+        """
+        candidates = self._axis_candidates()
+        if output not in candidates or dim not in candidates or output == dim:
+            return
+        self._updates_held = True
+        try:
+            self.x_widget.value = dim
+            self.y_widget.value = output
+            self.correlate_widget.value = True
+        finally:
+            self._updates_held = False
+        self._update()
+
     def _update_correlation(self, frame: pd.DataFrame, included: np.ndarray) -> None:
         """Fit every output against every input over the samples inside the filters.
 
         Axis, colour, and size changes redraw the plot without changing which
-        samples pass, so the fits are only redone when the sample set changes.
+        samples pass, so the fits are only redone when the sample set changes;
+        the table is still redrawn to outline the cell on the axes.
         """
         key = (self._grid_variable(), np.packbits(included).tobytes())
-        if key == self._correlation_key:
-            return
-        self._correlation_key = key
-        frames = profile_frames(frame.loc[included], self.schema)
-        count = int(included.sum())
-        self._correlation_title.object = (
-            "### Sensitivity within filters\n"
-            f"Lines through each mean response profile of the {count:,} samples inside the filters"
-        )
-        self._correlation.object = render_matrix(
-            frames,
+        if key != self._correlation_key or self._profile_frames is None:
+            self._correlation_key = key
+            self._profile_frames = profile_frames(frame.loc[included], self.schema)
+            count = int(included.sum())
+            self._correlation_title.object = (
+                "### Sensitivity within filters\n"
+                f"Lines through each mean response profile of the {count:,} samples inside "
+                "the filters. Click a cell to plot that pair with its best-fit line."
+            )
+        selected = (self.y_dim, self.x_dim) if self.correlate_widget.value else None
+        self._correlation.content = render_matrix(
+            self._profile_frames,
             {name: info.long_name for name, info in self.schema.coordinates.items()},
             {name: info.long_name for name, info in self.schema.variables.items()},
+            selected,
         )
 
     def _match_mask(self, frame: pd.DataFrame) -> np.ndarray | None:
@@ -792,7 +868,7 @@ class FilterView:
 
     def reset_filters(self) -> None:
         """Return every filter to its full range and include missing samples."""
-        self._resetting = True
+        self._updates_held = True
         try:
             for widget in self._filter_widgets.values():
                 if isinstance(widget, pn.widgets.MultiChoice):
@@ -802,7 +878,7 @@ class FilterView:
             for checkbox in self._missing_widgets.values():
                 checkbox.value = True
         finally:
-            self._resetting = False
+            self._updates_held = False
         self._update()
 
     def _on_point_tapped(self, index: list[int]) -> None:
@@ -859,6 +935,7 @@ class FilterView:
             self.y_widget,
             pn.pane.Markdown("### Non-matching points"),
             self.nonmatching_widget,
+            self.correlate_widget,
             pn.pane.Markdown("### Input and output filters"),
             pn.Row(self.search_widget, self.clear_search_widget, sizing_mode="stretch_width"),
             self._input_section,

@@ -128,7 +128,7 @@ def test_explorer_offers_only_the_filter_tab_behind_a_notice(tmp_path: Path) -> 
     assert len(view._sample_frame()) == 40
     assert set(view._filter_widgets) >= {"a", "b", "c", "n_rings", "geometry.mass"}
     assert "40 samples" in view._correlation_title.object
-    assert "<table" in view._correlation.object
+    assert "<table" in view._correlation.content
 
 
 def test_notice_explains_the_mode(tmp_path: Path) -> None:

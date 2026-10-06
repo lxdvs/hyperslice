@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import holoviews as hv
 import numpy as np
 import pandas as pd
 import pytest
@@ -10,11 +11,14 @@ from hyperslice.correlation import (
     BEND_DOWN,
     BEND_UP,
     CORRELATION_PALETTE,
+    CORRELATION_STYLES,
+    MINUS_SIGN,
     PROFILE_BINS,
     UNDEFINED_COLOR,
     ProfileFrames,
     band_color,
     bend_glyph,
+    best_fit,
     fit_profile,
     informative,
     mean_profile,
@@ -22,6 +26,7 @@ from hyperslice.correlation import (
     render_matrix,
     row_fractions,
 )
+from hyperslice.correlation_view import SensitivityMatrix
 from hyperslice.filtering import FilterView
 from hyperslice.schema import inspect_dataset
 from hyperslice.sensitivity import UNDEFINED
@@ -203,7 +208,7 @@ def test_filter_view_fits_only_the_samples_inside_the_filters(dataset: xr.Datase
     view = FilterView(dataset, schema)
     frame = view._sample_frame()
     assert f"{len(frame):,} samples" in view._correlation_title.object
-    before = view._correlation.object
+    before = view._correlation.content
 
     dim = next(name for name in view._filter_widgets if name in schema.coordinates)
     widget = view._filter_widgets[dim]
@@ -212,9 +217,105 @@ def test_filter_view_fits_only_the_samples_inside_the_filters(dataset: xr.Datase
     included = view._included_mask(frame)
     assert included.sum() < len(frame)
     assert f"{int(included.sum()):,} samples" in view._correlation_title.object
-    assert view._correlation.object != before
-    assert view._correlation.object == render_matrix(
+    assert view._correlation.content != before
+    assert view._correlation.content == render_matrix(
         profile_frames(frame.loc[included], schema),
         {name: info.long_name for name, info in schema.coordinates.items()},
         {name: info.long_name for name, info in schema.variables.items()},
     )
+
+
+def test_best_fit_recovers_a_line_and_its_quality() -> None:
+    x = np.array([1.0, 2.0, 3.0, 4.0, np.nan])
+    fit = best_fit(x, 2.0 * x - 1.0)
+    assert fit is not None
+    assert fit.slope == pytest.approx(2.0)
+    assert fit.intercept == pytest.approx(-1.0)
+    assert fit.r_squared == pytest.approx(1.0)
+    assert fit.count == 4
+    assert fit.equation() == f"y = 2·x {MINUS_SIGN} 1 (R² = 1.000, n = 4)"
+    scattered = best_fit(np.array([0.0, 0.0, 1.0, 1.0]), np.array([0.0, 2.0, 0.0, 2.0]))
+    assert scattered is not None and scattered.r_squared == pytest.approx(0.0)
+
+
+def test_best_fit_needs_numeric_varying_x() -> None:
+    assert best_fit(np.ones(4), np.arange(4.0)) is None
+    assert best_fit(np.array([1.0]), np.array([2.0])) is None
+    assert best_fit(np.array(["a", "b"]), np.array([1.0, 2.0])) is None
+    flat = best_fit(np.arange(3.0), np.full(3, 5.0))
+    assert flat is not None and flat.slope == pytest.approx(0.0) and np.isnan(flat.r_squared)
+
+
+def test_render_matrix_cells_name_their_pair_and_outline_the_selection() -> None:
+    html = render_matrix(_matrix(), {}, {}, selected=("y", "c"))
+    cells = html.split("<td")[1:]
+    assert 'data-output="y" data-input="a"' in cells[0]
+    assert 'class="selected"' in cells[1] and 'data-input="c"' in cells[1]
+    assert html.count("selected") == 1
+
+
+def test_matrix_component_reports_clicked_cells() -> None:
+    picked: list[tuple[str, str]] = []
+    matrix = SensitivityMatrix(on_select=lambda output, dim: picked.append((output, dim)))
+    matrix._handle_msg({"output": "y", "input": "a"})
+    matrix._handle_msg({"output": "y"})
+    matrix._handle_msg("noise")
+    assert picked == [("y", "a")]
+    assert CORRELATION_STYLES in matrix.stylesheets
+
+
+def _fit_curves(view: FilterView) -> list[hv.Curve]:
+    return view._plot.object.traverse(lambda element: element, specs=[hv.Curve])
+
+
+def test_clicking_a_cell_plots_the_pair_with_its_line_and_keeps_the_filters(
+    dataset: xr.Dataset,
+) -> None:
+    schema = inspect_dataset(dataset)
+    view = FilterView(dataset, schema)
+    frame = view._sample_frame()
+    widget = view._filter_widgets["fuel_temperature"]
+    drag(widget, (widget.start, (widget.start + widget.end) / 2))
+    z = view.variable
+    ranges = {name: w.value for name, w in view._filter_widgets.items()}
+    included = view._included_mask(frame)
+    assert not view.correlate_widget.value and not _fit_curves(view)
+
+    view._correlation._handle_msg({"output": "k_eff", "input": "drum_angle"})
+    assert (view.x_dim, view.y_dim, view.variable) == ("drum_angle", "k_eff", z)
+    assert view.correlate_widget.value
+    assert {name: w.value for name, w in view._filter_widgets.items()} == ranges
+    assert (view._included_mask(frame) == included).all()
+
+    inside = frame.loc[included]
+    fit = best_fit(inside["drum_angle"].to_numpy(), inside["k_eff"].to_numpy())
+    assert fit is not None
+    (curve,) = _fit_curves(view)
+    assert curve.label == f"Best fit: {fit.equation()}"
+    assert curve.dimension_values(1)[0] == pytest.approx(
+        fit.slope * curve.dimension_values(0)[0] + fit.intercept
+    )
+    assert "Best fit:" in view._summary.object
+    (picked,) = [cell for cell in view._correlation.content.split("<td")[1:] if "selected" in cell]
+    assert 'data-output="k_eff" data-input="drum_angle"' in picked
+
+    view.correlate_widget.value = False
+    assert not _fit_curves(view)
+    assert "Best fit:" not in view._summary.object
+    assert "selected" not in view._correlation.content
+
+
+def test_correlate_ignores_pairs_that_cannot_be_plotted(dataset: xr.Dataset) -> None:
+    view = FilterView(dataset, inspect_dataset(dataset))
+    axes = (view.x_dim, view.y_dim)
+    view.correlate("k_eff", "no_such_input")
+    view.correlate("k_eff", "k_eff")
+    assert (view.x_dim, view.y_dim) == axes
+    assert not view.correlate_widget.value
+
+
+def test_correlate_button_sits_under_the_nonmatching_selector(dataset: xr.Dataset) -> None:
+    view = FilterView(dataset, inspect_dataset(dataset))
+    controls = list(view.view[0])
+    assert controls.index(view.correlate_widget) == controls.index(view.nonmatching_widget) + 1
+    assert view.correlate_widget.name == "Correlate"
