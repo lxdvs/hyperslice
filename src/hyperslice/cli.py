@@ -10,8 +10,8 @@ import panel as pn
 import typer
 
 from hyperslice.exceptions import HyperSliceError
-from hyperslice.explorer import Explorer
-from hyperslice.schema import cardinality_table
+from hyperslice.explorer import Explorer, scattered_notice
+from hyperslice.schema import SAMPLE_DIM, cardinality_table
 
 app = typer.Typer(help="Explore rectilinear N-dimensional xarray datasets.")
 
@@ -33,6 +33,14 @@ def main(
             help="Print each output's cardinality (distinct values) before serving.",
         ),
     ] = False,
+    points: Annotated[
+        bool,
+        typer.Option(
+            "--points",
+            help="Load design-point JSON as scattered samples (Filter tab only), even "
+            "when it would fill a grid. Mostly-empty grids load this way already.",
+        ),
+    ] = False,
 ) -> None:
     """Launch a local HyperSlice server."""
     logging.basicConfig(level=logging.INFO)
@@ -43,10 +51,14 @@ def main(
             default_x=x_dim,
             default_y=y_dim,
             status_variable=status_variable,
+            layout="points" if points else "auto",
         )
     except HyperSliceError as exc:
         typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(2) from exc
+    if explorer.schema.scattered:
+        notice = scattered_notice(explorer.schema, int(explorer.dataset.sizes[SAMPLE_DIM]))
+        typer.secho(f"Warning: {notice.replace('**', '')}", fg=typer.colors.YELLOW, err=True)
     if show_cardinality:
         typer.echo(cardinality_table(explorer.schema))
     typer.echo(f"Serving HyperSlice for {dataset}")

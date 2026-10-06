@@ -451,6 +451,9 @@ class FilterView:
         ]
 
     def _sample_frame(self) -> pd.DataFrame:
+        if self.schema.scattered:
+            # Already one row per sample: inputs and outputs are columns.
+            return self.dataset.to_dataframe().reset_index()
         grid = self._grid_variable()
         data = self.dataset[grid]
         frame = data.to_dataframe(name=grid).reset_index()

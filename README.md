@@ -29,6 +29,13 @@ hyperslice examples/data/synthetic_sweep.zarr --variable peak_temperature \
 
 Use `--address`, `--port`, and `--no-browser` for server control.
 
+Design-point JSON from a space-filling design (Sobol, Latin hypercube) gives nearly
+every point its own value of each input, so a rectilinear grid over those values would
+be almost entirely empty. When the grid would hold more than 100 cells per point,
+HyperSlice loads the points as scattered samples instead: a warning explains this at
+startup, and only the Filter tab is offered, since the Slicer needs a grid. Pass
+`--points` to load any design-point JSON this way.
+
 Add `--show-cardinality` to print, before serving, every output's cardinality: the
 number of distinct values it takes across the dataset, highest first.
 

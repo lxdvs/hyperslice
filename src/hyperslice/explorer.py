@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Mapping
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -17,9 +18,9 @@ from hyperslice.colors import HIGHLIGHT_COLOR
 from hyperslice.exceptions import DatasetSchemaError, SliceError
 from hyperslice.export import bytes_io, csv_bytes, netcdf_bytes, save_png
 from hyperslice.filtering import FilterView, watch_settled
-from hyperslice.loading import DatasetSource, load_dataset
+from hyperslice.loading import DatasetSource, PointsLayout, load_dataset
 from hyperslice.plotting import build_plot
-from hyperslice.schema import DatasetSchema, inspect_dataset
+from hyperslice.schema import SAMPLE_DIM, DatasetSchema, inspect_dataset
 from hyperslice.sensitivity import sensitivity_frame
 from hyperslice.sensitivity_view import SensitivityPanel
 from hyperslice.slicing import SliceMethod, make_slice
@@ -110,6 +111,19 @@ TAB_STYLES = """
 """
 
 
+def scattered_notice(schema: DatasetSchema, samples: int) -> str:
+    """Why a scattered dataset opens with only the Filter tab, in Markdown."""
+    cells = math.prod(info.size for info in schema.coordinates.values())
+    return (
+        "**Running in non-rectilinear mode.** "
+        f"The {samples:,} samples do not form a rectilinear grid: their "
+        f"{len(schema.coordinates)} inputs' distinct values would span {cells:,} grid "
+        "cells, nearly all of them empty. HyperSlice is showing them as scattered "
+        "points instead. Only the **Filter** tab is available; the **Slicer** needs a "
+        "grid and is turned off."
+    )
+
+
 class Explorer:
     """Explore any multidimensional numeric variable in an xarray Dataset."""
 
@@ -123,10 +137,14 @@ class Explorer:
         status_variable: str | None = None,
         validity_variable: str | None = None,
         initial_method: SliceMethod = "exact",
+        layout: PointsLayout = "auto",
     ) -> None:
         self.source = source
-        self.dataset = load_dataset(source)
+        self.dataset = load_dataset(source, layout=layout)
         self.schema: DatasetSchema = inspect_dataset(self.dataset)
+        if self.schema.scattered:
+            self._build_scattered()
+            return
         self.status_variable = status_variable or self._default_status()
         self.validity_variable = validity_variable
         variables = [
@@ -219,6 +237,40 @@ class Explorer:
             stylesheets=[TAB_STYLES],
             sizing_mode="stretch_both",
         )
+
+    def _build_scattered(self) -> None:
+        """Offer only the Filter tab, behind a notice that must be dismissed.
+
+        Scattered samples share no grid for the slicer to cut, so none of its
+        controls are built.
+        """
+        self.filter_view = FilterView(self.dataset, self.schema)
+        self.tabs = pn.Tabs(
+            ("Filter", self.filter_view.view),
+            active=0,
+            dynamic=True,
+            stylesheets=[TAB_STYLES],
+            sizing_mode="stretch_both",
+        )
+        self.dismiss_notice = pn.widgets.Button(
+            name="OK, show the Filter view", button_type="primary", width=220
+        )
+        # Neither a close button nor a click outside: the notice stays until
+        # it has been acknowledged.
+        self.notice = pn.Modal(
+            pn.pane.Alert(
+                scattered_notice(self.schema, int(self.dataset.sizes[SAMPLE_DIM])),
+                alert_type="warning",
+                sizing_mode="stretch_width",
+            ),
+            self.dismiss_notice,
+            open=True,
+            show_close_button=False,
+            background_close=False,
+            width=560,
+        )
+        self.dismiss_notice.on_click(lambda _event: setattr(self.notice, "open", False))
+        self.view = pn.Column(self.notice, self.tabs, sizing_mode="stretch_both")
 
     def open_design_point(self, coordinates: dict[str, Any], variable: str | None = None) -> None:
         """Pin the slicer to *coordinates* and bring it to the front.
