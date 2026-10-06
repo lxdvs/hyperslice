@@ -326,6 +326,7 @@ class FilterView:
         self._correlation_key: tuple[str, bytes] | None = None
         self._profile_frames: ProfileFrames | None = None
         self._fit_summary = ""
+        self._cardinality_headings: dict[int, pn.pane.Markdown] = {}
         self.correlate_widget = pn.widgets.Toggle(
             name="Correlate", icon="chart-line", button_type="primary", button_style="outline"
         )
@@ -511,7 +512,15 @@ class FilterView:
         missing_widgets: dict[str, pn.widgets.Checkbox] = {}
         cells: dict[str, tuple[Any, tuple[str, ...]]] = {}
         inputs = self._varying_dimensions()
-        outputs = self._varying_outputs()
+        # Most distinct values first, the outputs most worth narrowing; ties
+        # alphabetically by the label the filter shows.
+        outputs = sorted(
+            self._varying_outputs(),
+            key=lambda name: (
+                -self.schema.variables[name].cardinality,
+                self.schema.variables[name].long_name.casefold(),
+            ),
+        )
         for name in inputs + outputs:
             # The Inputs and Outputs sections say which kind each filter is.
             label = (
@@ -610,6 +619,18 @@ class FilterView:
         self._pending_search = None
         self._apply_search()
 
+    def _cardinality_heading(self, cardinality: int) -> pn.pane.Markdown:
+        """Subtitle over the output filters sharing *cardinality*, made once each."""
+        heading = self._cardinality_headings.get(cardinality)
+        if heading is None:
+            heading = pn.pane.Markdown(
+                f"Cardinality {cardinality:,}",
+                margin=(8, 10, 0, 10),
+                styles={"color": "#536878", "font-size": "12px", "font-weight": "600"},
+            )
+            self._cardinality_headings[cardinality] = heading
+        return heading
+
     def _apply_search(self) -> None:
         """Show only the filters whose name or label contains the search text.
 
@@ -620,10 +641,19 @@ class FilterView:
         query = self.search_widget.value_input or ""
         inputs: list[Any] = []
         outputs: list[Any] = []
+        group: int | None = None
         for name, (cell, texts) in self._filter_cells.items():
             if not matches_search(query, *texts):
                 continue
-            (inputs if name in self.schema.coordinates else outputs).append(cell)
+            if name in self.schema.coordinates:
+                inputs.append(cell)
+                continue
+            # Outputs arrive ordered by cardinality: head each run of equals.
+            cardinality = self.schema.variables[name].cardinality
+            if cardinality != group:
+                outputs.append(self._cardinality_heading(cardinality))
+                group = cardinality
+            outputs.append(cell)
         self._input_grid.objects = inputs
         self._output_grid.objects = outputs
         self._input_section.visible = bool(inputs)
@@ -719,7 +749,7 @@ class FilterView:
                 height=540,
                 xlabel=self._axis_label(self.x_dim),
                 ylabel=self._axis_label(self.y_dim),
-                title=f"{value_label} — all samples",
+                title=f"{self._axis_label(self.x_dim)} vs {self._axis_label(self.y_dim)}",
                 fontsize=text_fontsize(int(self.text_size_widget.value)),
                 hooks=[bold_text],
                 show_legend=True,

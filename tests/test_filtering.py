@@ -811,3 +811,52 @@ def test_default_bounds_frame_only_the_points_inside_the_filters(
         # Bokeh's reset returns to these same bounds.
         assert axis_range.reset_start in (None, axis_range.start)
         assert axis_range.reset_end in (None, axis_range.end)
+
+
+def test_output_filters_run_by_cardinality_then_title() -> None:
+    a, b = np.arange(3.0), np.arange(4.0)
+    grid = np.add.outer(a, b)
+    dataset = xr.Dataset(
+        {
+            "few": (("a", "b"), grid % 2),
+            "zeta": (("a", "b"), grid),
+            "alpha": (("a", "b"), grid + 0.5),
+            "many": (("a", "b"), np.arange(12.0).reshape(3, 4)),
+        },
+        coords={"a": a, "b": b},
+    )
+    view = FilterView(dataset, inspect_dataset(dataset))
+    shown = [name for name in _shown_filter_names(view) if name in view.schema.variables]
+    # many: 12 distinct; alpha and zeta: 6 each, tied, so by title; few: 2.
+    assert shown == ["many", "alpha", "zeta", "few"]
+
+    def headed() -> list[str]:
+        cells = {id(cell): name for name, (cell, _texts) in view._filter_cells.items()}
+        return [
+            cells.get(id(item), str(getattr(item, "object", "")))
+            for item in view._output_grid.objects
+        ]
+
+    assert headed() == [
+        "Cardinality 12",
+        "many",
+        "Cardinality 6",
+        "alpha",
+        "zeta",
+        "Cardinality 2",
+        "few",
+    ]
+    # A search that hides a whole group drops its subtitle too.
+    view.search_widget.value_input = "zeta"
+    view._apply_search()
+    assert headed() == ["Cardinality 6", "zeta"]
+
+
+def test_plot_title_names_the_x_and_y_variables(dataset: xr.Dataset) -> None:
+    view = FilterView(dataset, inspect_dataset(dataset))
+    expected = f"{view._axis_label(view.x_dim)} vs {view._axis_label(view.y_dim)}"
+    assert view._plot.object.opts.get().kwargs["title"] == expected
+    view.correlate("k_eff", "drum_angle")
+    assert view._plot.object.opts.get().kwargs["title"] == (
+        f"{view._axis_label('drum_angle')} vs {view._axis_label('k_eff')}"
+    )
