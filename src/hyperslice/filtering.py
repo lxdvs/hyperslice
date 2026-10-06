@@ -228,15 +228,22 @@ class FilterView:
             schema, [name for name in axis_options if name != variable] or axis_options
         )[:2]
         self.variable_widget = pn.widgets.Select(
-            name="Z variable", options=self._options(variables), value=variable
+            name="Z variable",
+            options=self._options(variables),
+            value=variable,
+            sizing_mode="stretch_width",
         )
         self.x_widget = pn.widgets.Select(
-            name="X axis", options=self._options(axis_options), value=x_default
+            name="X axis",
+            options=self._options(axis_options),
+            value=x_default,
+            sizing_mode="stretch_width",
         )
         self.y_widget = pn.widgets.Select(
             name="Y axis",
             options=self._options([name for name in axis_options if name != x_default]),
             value=y_default,
+            sizing_mode="stretch_width",
         )
         self.point_size_widget = pn.widgets.IntSlider(
             name="Point size", start=3, end=24, step=1, value=6
@@ -249,12 +256,9 @@ class FilterView:
             name="Text size (pt)", start=8, end=24, step=1, value=11
         )
         self.menu_toggle = pn.widgets.Toggle(name="☰", width=45, align="end")
-        self._axis_matrix = pn.Column()
-        self._axis_x_checks: dict[str, pn.widgets.Checkbox] = {}
-        self._axis_y_checks: dict[str, pn.widgets.Checkbox] = {}
-        self._syncing_axes = False
-        self._input_grid = pn.GridBox(ncols=2, sizing_mode="stretch_width")
-        self._output_grid = pn.GridBox(ncols=2, sizing_mode="stretch_width")
+        # One filter per line: the controls column is too narrow for two.
+        self._input_grid = pn.Column(sizing_mode="stretch_width")
+        self._output_grid = pn.Column(sizing_mode="stretch_width")
         self._input_section = pn.Column(
             pn.pane.Markdown("#### Inputs", margin=(4, 10, 0, 10)),
             self._input_grid,
@@ -267,7 +271,10 @@ class FilterView:
         )
         self._no_match = pn.pane.Markdown("", visible=False, sizing_mode="stretch_width")
         self.search_widget = pn.widgets.TextInput(
-            placeholder="search...", width=220, align="center", margin=(0, 4, 0, 10)
+            placeholder="search...",
+            sizing_mode="stretch_width",
+            align="center",
+            margin=(0, 4, 0, 10),
         )
         self.clear_search_widget = pn.widgets.Button(
             name="Clear", width=70, align="center", margin=(0, 10, 0, 4)
@@ -310,7 +317,7 @@ class FilterView:
         self._resetting = False
         self.variable_widget.param.watch(self._on_variable, "value")
         self.x_widget.param.watch(self._on_x, "value")
-        self.y_widget.param.watch(self._on_y, "value")
+        self.y_widget.param.watch(lambda _event: self._update(), "value")
         self.nonmatching_widget.param.watch(lambda _event: self._update(), "value")
         watch_settled(self.point_size_widget, lambda _event: self._update())
         watch_settled(self.color_levels_widget, lambda _event: self._update())
@@ -322,7 +329,6 @@ class FilterView:
         self.search_widget.param.watch(self._on_search_typed, "value_input")
         self.search_widget.param.watch(self._on_search_entered, "value")
         self.clear_search_widget.on_click(lambda _event: self.clear_search())
-        self._rebuild_axis_matrix()
         self._rebuild_filters()
         self._update()
         self.view = self._build_view()
@@ -408,7 +414,6 @@ class FilterView:
         self.y_widget.options = self._options(remaining)
         if self.y_dim not in remaining:
             self.y_widget.value = remaining[-1]
-        self._rebuild_axis_matrix()
         self._rebuild_filters()
         self._update()
 
@@ -417,83 +422,7 @@ class FilterView:
         self.y_widget.options = self._options(remaining)
         if self.y_dim not in remaining:
             self.y_widget.value = remaining[-1]
-        self._sync_axis_matrix()
         self._update()
-
-    def _on_y(self, _event: Any) -> None:
-        self._sync_axis_matrix()
-        self._update()
-
-    def _rebuild_axis_matrix(self) -> None:
-        self._axis_x_checks = {}
-        self._axis_y_checks = {}
-        rows: list[Any] = [
-            pn.Row(
-                pn.pane.Markdown("**Dimension**", width=155, margin=(5, 5)),
-                pn.pane.Markdown("**X Axis**", width=65, margin=(5, 0)),
-                pn.pane.Markdown("**Y Axis**", width=65, margin=(5, 0)),
-                sizing_mode="fixed",
-            )
-        ]
-        for dim in self._axis_candidates():
-            x_check = pn.widgets.Checkbox(name="", width=65, align="center")
-            y_check = pn.widgets.Checkbox(name="", width=65, align="center")
-            x_check.param.watch(
-                lambda event, selected_dim=dim: self._on_axis_check(selected_dim, "x", event.new),
-                "value",
-            )
-            y_check.param.watch(
-                lambda event, selected_dim=dim: self._on_axis_check(selected_dim, "y", event.new),
-                "value",
-            )
-            self._axis_x_checks[dim] = x_check
-            self._axis_y_checks[dim] = y_check
-            label = (
-                self._dimension_label(dim)
-                if dim in self.schema.coordinates
-                else f"Output · {self._output_label(dim)}"
-            )
-            markup = (
-                f"<code style='color:{CONTINUOUS_COLOR};font-weight:600'>{label}</code>"
-                if self._is_continuous(dim)
-                else f"`{label}`"
-            )
-            rows.append(
-                pn.Row(
-                    pn.pane.Markdown(markup, width=155, margin=(5, 5)),
-                    x_check,
-                    y_check,
-                    sizing_mode="fixed",
-                )
-            )
-        self._axis_matrix.objects = rows
-        self._sync_axis_matrix()
-
-    def _on_axis_check(self, dim: str, axis: str, selected: bool) -> None:
-        if self._syncing_axes:
-            return
-        current = self.x_dim if axis == "x" else self.y_dim
-        if selected:
-            if axis == "x":
-                self.x_widget.value = dim
-            else:
-                self.y_widget.value = dim
-        elif current == dim:
-            self._sync_axis_matrix()
-
-    def _sync_axis_matrix(self) -> None:
-        if not self._axis_x_checks:
-            return
-        self._syncing_axes = True
-        try:
-            for dim, checkbox in self._axis_x_checks.items():
-                checkbox.value = dim == self.x_dim
-                checkbox.disabled = dim == self.y_dim
-            for dim, checkbox in self._axis_y_checks.items():
-                checkbox.value = dim == self.y_dim
-                checkbox.disabled = dim == self.x_dim
-        finally:
-            self._syncing_axes = False
 
     def _grid_variable(self) -> str:
         """Variable whose grid defines the sample set.
@@ -563,10 +492,11 @@ class FilterView:
         inputs = self._varying_dimensions()
         outputs = self._varying_outputs()
         for name in inputs + outputs:
+            # The Inputs and Outputs sections say which kind each filter is.
             label = (
-                f"Input · {self._dimension_label(name)}"
+                self._dimension_label(name)
                 if name in inputs
-                else f"Output · {self.schema.variables[name].long_name}"
+                else self.schema.variables[name].long_name
             )
             styling = {"stylesheets": [CONTINUOUS_STYLESHEET]} if self._is_continuous(name) else {}
             if name in self.schema.coordinates and self.schema.coordinates[name].categorical:
@@ -922,14 +852,20 @@ class FilterView:
             ),
             self._menu,
             self.variable_widget,
-            pn.Row(self.x_widget, self.y_widget),
+            self.x_widget,
+            self.y_widget,
             pn.pane.Markdown("### Non-matching points"),
             self.nonmatching_widget,
-            pn.pane.Markdown("### Display axes"),
-            self._axis_matrix,
+            pn.pane.Markdown("### Input and output filters"),
+            pn.Row(self.search_widget, self.clear_search_widget, sizing_mode="stretch_width"),
+            self._input_section,
+            self._output_section,
+            self._no_match,
+            # Full row height and scrolling on its own, so a long filter list
+            # stays reachable without scrolling the plot out of view.
             width=360,
-            height=720,
-            sizing_mode="fixed",
+            min_height=720,
+            sizing_mode="stretch_height",
             scroll=True,
             styles={"padding": "12px", "background": "#f5f7f9"},
         )
@@ -939,20 +875,9 @@ class FilterView:
             self._reset_view,
             self._coverage,
             self._summary,
-            pn.Row(
-                pn.pane.Markdown(
-                    "### Input and output filters", sizing_mode="fixed", align="center"
-                ),
-                self.search_widget,
-                self.clear_search_widget,
-                sizing_mode="stretch_width",
-            ),
-            self._input_section,
-            self._output_section,
-            self._no_match,
             self._correlation_title,
             self._correlation,
-            # Width only, so the filter sections push content down rather
+            # Width only, so the sensitivity table pushes content down rather
             # than shrinking inside a viewport-high column.
             sizing_mode="stretch_width",
         )

@@ -106,13 +106,12 @@ def test_nonmatching_points_are_hidden_from_the_plot(dataset: xr.Dataset) -> Non
     assert "outside filters" in view._summary.object
 
 
-def test_filter_axis_checkbox_matrix_updates_projection(dataset: xr.Dataset) -> None:
+def test_x_axis_selector_updates_projection(dataset: xr.Dataset) -> None:
     view = FilterView(dataset, inspect_dataset(dataset))
     new_x = next(dim for dim in dataset[view.variable].dims if dim not in {view.x_dim, view.y_dim})
-    view._axis_x_checks[new_x].value = True
+    view.x_widget.value = new_x
     assert view.x_dim == new_x
-    assert sum(check.value for check in view._axis_x_checks.values()) == 1
-    assert view._axis_y_checks[new_x].disabled
+    assert new_x not in view.y_widget.options.values()
     assert view._plot.object is not None
 
 
@@ -120,8 +119,7 @@ def test_filter_allows_output_variables_on_axes(dataset: xr.Dataset) -> None:
     view = FilterView(dataset, inspect_dataset(dataset))
     output_axis = next(name for name in view._compatible_outputs() if name != view.variable)
     assert output_axis in view.x_widget.options.values()
-    assert output_axis in view._axis_x_checks
-    view._axis_x_checks[output_axis].value = True
+    view.x_widget.value = output_axis
     assert view.x_dim == output_axis
     assert view._plot.object is not None
     assert not view._message.visible
@@ -138,7 +136,7 @@ def test_filter_output_change_rebuilds_compatible_controls() -> None:
     )
     view = FilterView(dataset, inspect_dataset(dataset))
     view.variable_widget.value = "second"
-    assert set(view._axis_x_checks) == {"a", "b", "second"}
+    assert set(view.x_widget.options.values()) == {"a", "b", "second"}
     assert set(view._filter_widgets) == {"a", "b", "second"}
     assert view._plot.object is not None
 
@@ -229,7 +227,6 @@ def test_constant_outputs_are_hidden_from_filters_and_dropdowns() -> None:
     assert "fixed" not in view.variable_widget.options
     assert "fixed" not in view.x_widget.options
     assert "fixed" not in view.y_widget.options
-    assert "fixed" not in view._axis_x_checks
     assert "varies" in view._filter_widgets
 
 
@@ -609,8 +606,8 @@ def _shown_filter_names(view: FilterView) -> list[str]:
 
 def test_filters_are_split_into_input_and_output_sections(dataset: xr.Dataset) -> None:
     view = FilterView(dataset, inspect_dataset(dataset))
-    main = list(view.view[1])
-    assert main.index(view._output_section) == main.index(view._input_section) + 1
+    controls = list(view.view[0])
+    assert controls.index(view._output_section) == controls.index(view._input_section) + 1
     assert "Inputs" in view._input_section[0].object
     assert "Outputs" in view._output_section[0].object
     inputs = [
@@ -637,25 +634,35 @@ def test_filters_are_split_into_input_and_output_sections(dataset: xr.Dataset) -
 def test_matches_search_is_case_insensitive_and_blank_matches_all() -> None:
     assert matches_search("", "anything")
     assert matches_search("   ", "anything")
-    assert matches_search("TEMP", "fuel_temperature", "Input · Fuel temperature [K]")
-    assert matches_search("fuel temp", "fuel_temperature", "Input · Fuel temperature [K]")
-    assert not matches_search("pressure", "fuel_temperature", "Input · Fuel temperature [K]")
+    assert matches_search("TEMP", "fuel_temperature", "Fuel temperature [K]")
+    assert matches_search("fuel temp", "fuel_temperature", "Fuel temperature [K]")
+    assert not matches_search("pressure", "fuel_temperature", "Fuel temperature [K]")
 
 
 def test_search_box_and_clear_button_follow_the_filters_heading(dataset: xr.Dataset) -> None:
     view = FilterView(dataset, inspect_dataset(dataset))
     assert view.search_widget.placeholder == "search..."
-    heading_row = next(
-        item for item in view.view[1] if isinstance(item, pn.Row) and view.search_widget in item
-    )
-    heading, search, clear = heading_row
+    controls = list(view.view[0])
+    row = next(item for item in controls if isinstance(item, pn.Row) and view.search_widget in item)
+    heading = controls[controls.index(row) - 1]
     assert isinstance(heading, pn.pane.Markdown)
     assert "Input and output filters" in str(heading.object)
-    # Content-width heading so the box sits right after the text, not at the far edge.
-    assert heading.sizing_mode == "fixed"
-    assert search is view.search_widget
-    assert clear is view.clear_search_widget
-    assert clear.name == "Clear"
+    assert list(row) == [view.search_widget, view.clear_search_widget]
+    assert view.clear_search_widget.name == "Clear"
+    # The filters sit under their search, in the controls column.
+    assert controls.index(view._input_section) == controls.index(row) + 1
+
+
+def test_controls_stack_one_per_line_with_no_axis_matrix(dataset: xr.Dataset) -> None:
+    view = FilterView(dataset, inspect_dataset(dataset))
+    controls = list(view.view[0])
+    selectors = [view.variable_widget, view.x_widget, view.y_widget]
+    assert [controls.index(widget) for widget in selectors] == [2, 3, 4]
+    texts = [str(item.object) for item in controls if isinstance(item, pn.pane.Markdown)]
+    assert not any("Display axes" in text for text in texts)
+    assert isinstance(view._input_grid, pn.Column) and isinstance(view._output_grid, pn.Column)
+    labels = [widget.name for widget in view._filter_widgets.values()]
+    assert labels and not any(label.startswith(("Input", "Output")) for label in labels)
 
 
 def test_clear_button_empties_the_search_and_restores_every_filter(
