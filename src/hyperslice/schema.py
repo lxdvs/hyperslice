@@ -305,3 +305,22 @@ def axis_label(dataset: xr.Dataset, name: str) -> str:
     label = str(coord.attrs.get("long_name", name.replace("_", " ").title()))
     units = coord.attrs.get("units")
     return f"{label} [{units}]" if units else label
+
+
+def plot_label(dataset: xr.Dataset, name: str) -> str:
+    """A field's label for a plot axis: its own name, without its group.
+
+    Design-point JSON names outputs ``group.name``, and with no ``long_name``
+    the group would lead every label. Only the part after the last dot is
+    kept; one written with spaces keeps its own capitals (``BOL k-effective``,
+    ``Power (MW)``), and a snake_case one is spaced and capitalised. A
+    ``long_name`` attribute, when present, is used as written. Units follow
+    in brackets.
+    """
+    field = dataset.coords[name] if name in dataset.coords else dataset[name]
+    label = field.attrs.get("long_name")
+    if label is None:
+        short = name.rsplit(".", 1)[-1]
+        label = short if " " in short else short.replace("_", " ").title()
+    units = field.attrs.get("units")
+    return f"{label} [{units}]" if units else str(label)

@@ -5,8 +5,6 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Mapping
-from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import Any
 
 import holoviews as hv
@@ -16,7 +14,7 @@ import xarray as xr
 
 from hyperslice.colors import HIGHLIGHT_COLOR
 from hyperslice.exceptions import DatasetSchemaError, SliceError
-from hyperslice.export import bytes_io, csv_bytes, netcdf_bytes, save_png
+from hyperslice.export import bytes_io, csv_bytes, netcdf_bytes, png_bytes
 from hyperslice.filtering import FilterView, watch_settled
 from hyperslice.loading import DatasetSource, PointsLayout, load_dataset
 from hyperslice.plotting import build_plot
@@ -690,13 +688,7 @@ class Explorer:
 
     def _png_download(self) -> Any:
         """Render the visible plot through Bokeh's browser-based PNG exporter."""
-        with NamedTemporaryFile(suffix=".png", delete=False) as temporary:
-            path = Path(temporary.name)
-        try:
-            save_png(self._plot.object, path)
-            return bytes_io(path.read_bytes())
-        finally:
-            path.unlink(missing_ok=True)
+        return png_bytes(self._plot.object)
 
     def _build_view(self) -> pn.viewable.Viewable:
         source_name = (

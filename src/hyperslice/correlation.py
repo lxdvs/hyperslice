@@ -153,6 +153,18 @@ class ProfileFrames:
     levels: pd.DataFrame
 
 
+def keep_outputs(frames: ProfileFrames, outputs: list[str]) -> ProfileFrames:
+    """*frames* with only the rows for *outputs*, in their existing order."""
+    rows = [name for name in frames.sensitivity.index if name in set(outputs)]
+    return ProfileFrames(
+        sensitivity=frames.sensitivity.loc[rows],
+        nonlinearity=frames.nonlinearity.loc[rows],
+        bend=frames.bend.loc[rows],
+        correlation=frames.correlation.loc[rows],
+        levels=frames.levels.loc[rows],
+    )
+
+
 def profile_frames(samples: pd.DataFrame, schema: DatasetSchema) -> ProfileFrames:
     """Profile fits of every output (rows) against every input (columns).
 
@@ -295,6 +307,18 @@ CORRELATION_STYLES = """
   white-space: normal;
   overflow-wrap: anywhere;
 }
+.hs-corr th.hs-corr-kind {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #8a98a6;
+}
+.hs-corr th.hs-corr-corner {
+  text-align: right;
+  vertical-align: bottom;
+  padding: 0 8px 4px 0;
+}
 .hs-corr tbody th {
   padding: 0 8px 0 0;
   text-align: right;
@@ -428,23 +452,44 @@ def render_matrix(
             '<div class="hs-corr-hidden">No output responds to any input within the filters.'
             f"</div>{hidden}"
         )
-    header = "".join(f"<th>{escape(input_labels.get(name, name))}</th>" for name in columns)
+    # The longer list runs down the side and the shorter across the top, so
+    # a wide study grows downward instead of off the right edge.
+    by_input = len(columns) > len(kept_rows)
+    if by_input:
+        row_names, column_names = columns, kept_rows
+        row_kind, column_kind = "Inputs", "Outputs"
+        row_labels, column_labels = input_labels, output_labels
+    else:
+        row_names, column_names = kept_rows, columns
+        row_kind, column_kind = "Outputs", "Inputs"
+        row_labels, column_labels = output_labels, input_labels
+    # Colour always compares inputs within one output, whichever way it lies.
+    fractions = {output: row_fractions(frames.sensitivity.loc[output]) for output in kept_rows}
+    header = (
+        f'<tr><th class="hs-corr-kind hs-corr-corner" rowspan="2">{row_kind} &darr;</th>'
+        f'<th class="hs-corr-kind" colspan="{len(column_names)}">{column_kind} &rarr;</th></tr>'
+        "<tr>"
+        + "".join(f"<th>{escape(column_labels.get(name, name))}</th>" for name in column_names)
+        + "</tr>"
+    )
     rows = []
-    for output in kept_rows:
-        output_label = escape(output_labels.get(output, output))
-        fractions = row_fractions(frames.sensitivity.loc[output])
-        cells = "".join(
-            _cell(
-                frames,
-                output,
-                dim,
-                float(fractions[dim]),
-                f"{output_label} vs {escape(input_labels.get(dim, dim))}",
-                selected == (output, dim),
+    for row in row_names:
+        row_label = escape(row_labels.get(row, row))
+        cells = []
+        for column in column_names:
+            output, dim = (column, row) if by_input else (row, column)
+            cells.append(
+                _cell(
+                    frames,
+                    output,
+                    dim,
+                    float(fractions[output][dim]),
+                    f"{escape(output_labels.get(output, output))} vs "
+                    f"{escape(input_labels.get(dim, dim))}",
+                    selected == (output, dim),
+                )
             )
-            for dim in columns
-        )
-        rows.append(f"<tr><th>{output_label}</th>{cells}</tr>")
+        rows.append(f"<tr><th>{row_label}</th>{''.join(cells)}</tr>")
     bands = "".join(f'<span style="background: {color}"></span>' for color in CORRELATION_PALETTE)
     legend = (
         '<div class="hs-corr-legend">'
@@ -456,7 +501,7 @@ def render_matrix(
     )
     return (
         '<div class="hs-corr-wrap"><table class="hs-corr">'
-        f"<thead><tr><th></th>{header}</tr></thead>"
+        f"<thead>{header}</thead>"
         f"<tbody>{''.join(rows)}</tbody>"
         f"</table></div>{legend}{hidden}"
     )

@@ -18,17 +18,25 @@ from hyperslice.correlation import (
     TIMES_SIGN,
     ProfileFrames,
     best_fit,
+    keep_outputs,
     profile_frames,
     render_matrix,
 )
 from hyperslice.correlation_view import SensitivityMatrix
-from hyperslice.schema import DatasetSchema, axis_label
+from hyperslice.export import png_bytes
+from hyperslice.schema import DatasetSchema, plot_label
+from hyperslice.searchable import searchable_select
 from hyperslice.widgets import reset_view_button
 
 #: Opacity of samples outside the active filters. Low enough to read as
 #: background against the matching cloud, high enough to keep the shape of the
 #: sampled space visible — filtering narrows attention, it does not delete data.
 NONMATCHING_ALPHA = 0.15
+
+#: Highest cardinality an output can have and still be treated as a flag by
+#: "Filter flags": a run status, a pass/fail mark, a two-level setting. Such
+#: outputs make poor filters, axes, and sensitivities, so they are hidden.
+FLAG_CARDINALITY = 2
 
 #: Best-fit line drawn by Correlate: dark enough to read over every Viridis
 #: colour, and distinct from the magenta selection outline.
@@ -140,6 +148,23 @@ def bold_text(plot: Any, element: Any) -> None:
         colorbar.major_label_text_font_style = "bold"
 
 
+def selector_order(schema: DatasetSchema, names: list[str]) -> list[str]:
+    """Inputs first, as given, then outputs by cardinality, ties by title.
+
+    The same order as the filter list, so a field sits in the same place in
+    the X, Y, and Z selectors as among the filters.
+    """
+    inputs = [name for name in names if name in schema.coordinates]
+    outputs = sorted(
+        (name for name in names if name not in schema.coordinates),
+        key=lambda name: (
+            -schema.variables[name].cardinality,
+            schema.variables[name].long_name.casefold(),
+        ),
+    )
+    return inputs + outputs
+
+
 def option_map(names: list[str], continuous: Callable[[str], bool]) -> dict[str, str]:
     """Label each option, marking the continuous ones green."""
     return {
@@ -216,9 +241,13 @@ class FilterView:
         self.dataset = dataset
         self.schema = schema
         self.on_point_selected = on_point_selected
+        self.filter_flags_widget = pn.widgets.Checkbox(name="Filter flags", value=True)
         outputs = [name for name, info in schema.variables.items() if not info.constant] or list(
             schema.variables
         )
+        # The Z choices before flags are set aside, so toggling can restore them.
+        self._z_outputs = outputs
+        outputs = self._without_flags(outputs) or outputs
         # Open on the most interesting fields: outputs before inputs, and
         # within each class the one taking the most distinct values.
         variable = most_interesting(schema, outputs)[0]
@@ -228,31 +257,33 @@ class FilterView:
             dim for dim in dims if not schema.coordinates[dim].constant and dim not in outputs
         ]
         varying_dims = [dim for dim in dims if not schema.coordinates[dim].constant] or dims
-        compatible_outputs = [
-            name
-            for name, info in schema.variables.items()
-            if set(info.dims).issubset(set(dims)) and not info.constant
-        ]
+        compatible_outputs = self._without_flags(
+            [
+                name
+                for name, info in schema.variables.items()
+                if set(info.dims).issubset(set(dims)) and not info.constant
+            ]
+        )
         axis_options = varying_dims + [
             name for name in compatible_outputs if name not in varying_dims
         ]
         x_default, y_default = most_interesting(
             schema, [name for name in axis_options if name != variable] or axis_options
         )[:2]
-        self.variable_widget = pn.widgets.Select(
-            name="Z variable",
+        self.variable_widget = searchable_select(
+            "Z variable",
             options=self._options(variables),
             value=variable,
             sizing_mode="stretch_width",
         )
-        self.x_widget = pn.widgets.Select(
-            name="X axis",
+        self.x_widget = searchable_select(
+            "X axis",
             options=self._options(axis_options),
             value=x_default,
             sizing_mode="stretch_width",
         )
-        self.y_widget = pn.widgets.Select(
-            name="Y axis",
+        self.y_widget = searchable_select(
+            "Y axis",
             options=self._options([name for name in axis_options if name != x_default]),
             value=y_default,
             sizing_mode="stretch_width",
@@ -308,6 +339,15 @@ class FilterView:
         self._plot = pn.pane.HoloViews(height=560, sizing_mode="stretch_width")
         self._plot_box = pn.Column(self._plot, sizing_mode="stretch_width")
         self._reset_view = reset_view_button(self._plot_box)
+        # Same export as the slicer's Download PNG, of whatever is on screen.
+        self._png = pn.widgets.FileDownload(
+            label="Download PNG",
+            callback=lambda: png_bytes(self._plot.object),
+            filename="hyperslice_filter.png",
+            icon="download",
+            width=190,
+            margin=(0, 0, 8, 8),
+        )
         self._summary = pn.pane.Markdown()
         self._coverage = pn.pane.Alert("", alert_type="warning", visible=False)
         self._message = pn.pane.Alert("", alert_type="danger", visible=False)
@@ -316,6 +356,7 @@ class FilterView:
             self.text_size_widget,
             self.continuous_color_widget,
             self.color_levels_widget,
+            self.filter_flags_widget,
             visible=False,
             styles={"padding": "8px", "background": "#eef2f6", "border-radius": "6px"},
         )
@@ -338,6 +379,7 @@ class FilterView:
         self.y_widget.param.watch(lambda _event: self._update(), "value")
         self.nonmatching_widget.param.watch(lambda _event: self._update(), "value")
         self.correlate_widget.param.watch(lambda _event: self._update(), "value")
+        self.filter_flags_widget.param.watch(self._on_filter_flags, "value")
         watch_settled(self.point_size_widget, lambda _event: self._update())
         watch_settled(self.color_levels_widget, lambda _event: self._update())
         watch_settled(self.text_size_widget, lambda _event: self._update())
@@ -378,9 +420,8 @@ class FilterView:
         return info.long_name + (f" [{info.units}]" if info.units else "")
 
     def _axis_label(self, name: str) -> str:
-        if name in self.schema.coordinates:
-            return axis_label(self.dataset, name)
-        return self._output_label(name)
+        """Label on the plot's axes, colour bar and title: no group prefix."""
+        return plot_label(self.dataset, name)
 
     def _varying_dimensions(self) -> list[str]:
         """Input dimensions that take more than one value."""
@@ -390,10 +431,44 @@ class FilterView:
         ] or dimensions
 
     def _varying_outputs(self) -> list[str]:
-        """Compatible outputs that are not fixed at a single value everywhere."""
-        return [
-            name for name in self._compatible_outputs() if not self.schema.variables[name].constant
+        """Compatible outputs that are not fixed at a single value everywhere.
+
+        Flags are left out while "Filter flags" is on.
+        """
+        return self._without_flags(
+            [
+                name
+                for name in self._compatible_outputs()
+                if not self.schema.variables[name].constant
+            ]
+        )
+
+    def _is_flag(self, name: str) -> bool:
+        """An output taking :data:`FLAG_CARDINALITY` or fewer distinct values."""
+        info = self.schema.variables.get(name)
+        return info is not None and info.cardinality <= FLAG_CARDINALITY
+
+    def _without_flags(self, names: list[str]) -> list[str]:
+        """*names* minus flag outputs while "Filter flags" is on; inputs always stay."""
+        if not self.filter_flags_widget.value:
+            return list(names)
+        return [name for name in names if not self._is_flag(name)]
+
+    def _on_filter_flags(self, _event: Any) -> None:
+        """Offer or withdraw flag outputs as Z, axes, filters, and sensitivities."""
+        shown = self._without_flags(self._z_outputs) or self._z_outputs
+        inputs = [
+            name
+            for name in self.variable_widget.options.values()
+            if name in self.schema.coordinates
         ]
+        choices = shown + [name for name in inputs if name not in shown]
+        self.variable_widget.options = self._options(choices)
+        if self.variable not in choices:
+            # Changing Z rebuilds the axes and filters through _on_variable.
+            self.variable_widget.value = choices[0]
+            return
+        self._on_variable(None)
 
     def _is_continuous(self, name: str) -> bool:
         """True when a field's values are essentially all independent.
@@ -407,8 +482,8 @@ class FilterView:
         return bool(info and info.high_cardinality)
 
     def _options(self, names: list[str]) -> dict[str, str]:
-        """Dropdown options labelled so continuous fields read green."""
-        return option_map(names, self._is_continuous)
+        """Dropdown options in selector order, labelled so continuous fields read green."""
+        return option_map(selector_order(self.schema, names), self._is_continuous)
 
     def _palette(self) -> list[str]:
         """Colour ramp for the z axis, banded when divisions are requested."""
@@ -514,13 +589,7 @@ class FilterView:
         inputs = self._varying_dimensions()
         # Most distinct values first, the outputs most worth narrowing; ties
         # alphabetically by the label the filter shows.
-        outputs = sorted(
-            self._varying_outputs(),
-            key=lambda name: (
-                -self.schema.variables[name].cardinality,
-                self.schema.variables[name].long_name.casefold(),
-            ),
-        )
+        outputs = selector_order(self.schema, self._varying_outputs())
         for name in inputs + outputs:
             # The Inputs and Outputs sections say which kind each filter is.
             label = (
@@ -841,8 +910,10 @@ class FilterView:
                 "the filters. Click a cell to plot that pair with its best-fit line."
             )
         selected = (self.y_dim, self.x_dim) if self.correlate_widget.value else None
+        frames = self._profile_frames
+        shown = self._without_flags([str(name) for name in frames.sensitivity.index])
         self._correlation.content = render_matrix(
-            self._profile_frames,
+            keep_outputs(frames, shown),
             {name: info.long_name for name, info in self.schema.coordinates.items()},
             {name: info.long_name for name, info in self.schema.variables.items()},
             selected,
@@ -960,9 +1031,9 @@ class FilterView:
                 sizing_mode="stretch_width",
             ),
             self._menu,
-            self.variable_widget,
             self.x_widget,
             self.y_widget,
+            self.variable_widget,
             pn.pane.Markdown("### Non-matching points"),
             self.nonmatching_widget,
             self.correlate_widget,
@@ -982,7 +1053,7 @@ class FilterView:
         main = pn.Column(
             self._message,
             self._plot_box,
-            self._reset_view,
+            pn.Row(self._reset_view, self._png),
             self._coverage,
             self._summary,
             self._correlation_title,

@@ -319,3 +319,41 @@ def test_correlate_button_sits_under_the_nonmatching_selector(dataset: xr.Datase
     controls = list(view.view[0])
     assert controls.index(view.correlate_widget) == controls.index(view.nonmatching_widget) + 1
     assert view.correlate_widget.name == "Correlate"
+
+
+def _orientation_frames(outputs: list[str], inputs: list[str]) -> ProfileFrames:
+    rng = np.random.default_rng(3)
+    sens = pd.DataFrame(rng.uniform(0.1, 1.0, (len(outputs), len(inputs))), outputs, inputs)
+    zero = sens * 0.0
+    return ProfileFrames(sens, zero, zero, zero, zero + 3)
+
+
+def _row_headers(html: str) -> list[str]:
+    body = html.split("<tbody>")[1].split("</tbody>")[0]
+    return [row.split("<th>")[1].split("</th>")[0] for row in body.split("<tr>")[1:]]
+
+
+def test_more_inputs_than_outputs_puts_inputs_down_the_side() -> None:
+    frames = _orientation_frames(["y", "z"], ["a", "b", "c"])
+    html = render_matrix(frames, {}, {}, selected=("z", "b"))
+    assert _row_headers(html) == ["a", "b", "c"]
+    assert "Inputs &darr;" in html and "Outputs &rarr;" in html
+    assert 'colspan="2"' in html
+    # Each cell still names its own output and input, whichever way it lies.
+    (picked,) = [cell for cell in html.split("<td")[1:] if "selected" in cell]
+    assert 'data-output="z" data-input="b"' in picked
+    # Colour still compares inputs within one output: z's largest is darkest.
+    largest = str(frames.sensitivity.loc["z"].idxmax())
+    cell = next(
+        cell for cell in html.split("<td")[1:] if f'data-output="z" data-input="{largest}"' in cell
+    )
+    assert f"background: {band_color(1.0)}" in cell
+
+
+def test_more_outputs_than_inputs_keeps_outputs_down_the_side() -> None:
+    html = render_matrix(_orientation_frames(["x", "y", "z"], ["a", "b"]), {}, {})
+    assert _row_headers(html) == ["x", "y", "z"]
+    assert "Outputs &darr;" in html and "Inputs &rarr;" in html
+    # A tie keeps outputs down the side.
+    tied = render_matrix(_orientation_frames(["x", "y"], ["a", "b"]), {}, {})
+    assert _row_headers(tied) == ["x", "y"]

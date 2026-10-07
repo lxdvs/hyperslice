@@ -52,9 +52,20 @@ def test_filter_reset_button_sits_below_the_plot(dataset: xr.Dataset) -> None:
     view = FilterView(dataset, inspect_dataset(dataset))
     main = view.view[1]
     objects = list(main)
-    assert objects.index(view._reset_view) == objects.index(view._plot_box) + 1
+    # Reset and Download PNG share the row under the plot.
+    buttons = objects[objects.index(view._plot_box) + 1]
+    assert list(buttons) == [view._reset_view, view._png]
+    assert view._png.label == "Download PNG"
     assert view._plot in view._plot_box
     _rendered_reset_callback(view.view)
+
+
+def test_filter_png_download_renders_the_shown_plot(dataset: xr.Dataset) -> None:
+    view = FilterView(dataset, inspect_dataset(dataset))
+    view.correlate("k_eff", "drum_angle")
+    data = view._png.callback().read()
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    assert len(data) > 10_000
 
 
 def test_reset_container_survives_a_redraw(dataset: xr.Dataset) -> None:

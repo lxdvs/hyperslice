@@ -26,6 +26,7 @@ from hyperslice.filtering import (
     distinct_values,
     matches_search,
     most_interesting,
+    selector_order,
     text_fontsize,
     tick_stylesheet,
 )
@@ -187,6 +188,8 @@ def test_all_missing_variable_disables_slider_but_keeps_checkbox() -> None:
         coords={"a": [0, 1], "b": [1, 2, 3]},
     )
     view = FilterView(dataset, inspect_dataset(dataset))
+    # An all-missing output has cardinality 0, so Filter flags would hide it.
+    view.filter_flags_widget.value = False
     assert view._filter_widgets["empty"].disabled is True
     assert view._missing_widgets["empty"].value is True
     assert int(view._summary.object.split()[0].replace("**", "")) == 6
@@ -261,6 +264,7 @@ def test_high_cardinality_outputs_are_styled_green() -> None:
         coords={"a": [0, 1], "b": [1, 2, 3]},
     )
     plain = FilterView(bucketed, inspect_dataset(bucketed))
+    plain.filter_flags_widget.value = False
     assert all(
         CONTINUOUS_COLOR not in sheet for sheet in plain._filter_widgets["repeated"].stylesheets
     )
@@ -269,7 +273,7 @@ def test_high_cardinality_outputs_are_styled_green() -> None:
 def test_z_variable_widget_offers_inputs_and_outputs() -> None:
     dataset = _constant_field_dataset()
     view = FilterView(dataset, inspect_dataset(dataset))
-    assert view.variable_widget.name == "Z variable"
+    assert view.variable_widget.label == "Z variable"
     offered = set(view.variable_widget.options.values())
     assert {"a", "b"}.issubset(offered)
     assert {"varies", "also_varies"}.issubset(offered)
@@ -364,6 +368,7 @@ def test_dropdowns_mark_continuous_fields_green() -> None:
         coords={"a": [0, 1], "b": [1, 2, 3]},
     )
     view = FilterView(dataset, inspect_dataset(dataset))
+    view.filter_flags_widget.value = False
     labels = {value: label for label, value in view.variable_widget.options.items()}
     assert labels["independent"].startswith(CONTINUOUS_MARKER)
     assert labels["bucketed"].startswith(PLAIN_MARKER)
@@ -579,7 +584,7 @@ def test_filter_view_opens_on_the_most_interesting_outputs(dataset: xr.Dataset) 
     assert len({view.variable, view.x_dim, view.y_dim}) == 3
 
 
-def test_most_interesting_prefers_outputs_then_cardinalitys() -> None:
+def test_most_interesting_prefers_outputs_then_cardinality() -> None:
     dataset = xr.Dataset(
         {
             "coarse": (("a", "b"), np.repeat([[0.0, 1.0]], 4, axis=0)),
@@ -594,8 +599,11 @@ def test_most_interesting_prefers_outputs_then_cardinalitys() -> None:
     assert most_interesting(schema, ["b", "a", "coarse", "fine"]) == ["fine", "coarse", "a", "b"]
 
     view = FilterView(dataset, schema)
-    assert (view.variable, view.x_dim, view.y_dim) == ("fine", "coarse", "a")
-    assert "coarse" not in view.y_widget.options.values()
+    # Two-valued "coarse" is a flag to Filter flags, so the axes skip it.
+    assert (view.variable, view.x_dim, view.y_dim) == ("fine", "a", "b")
+    assert "coarse" not in view.x_widget.options.values()
+    view.filter_flags_widget.value = False
+    assert "coarse" in view.x_widget.options.values()
 
 
 def _shown_filter_names(view: FilterView) -> list[str]:
@@ -656,7 +664,7 @@ def test_search_box_and_clear_button_follow_the_filters_heading(dataset: xr.Data
 def test_controls_stack_one_per_line_with_no_axis_matrix(dataset: xr.Dataset) -> None:
     view = FilterView(dataset, inspect_dataset(dataset))
     controls = list(view.view[0])
-    selectors = [view.variable_widget, view.x_widget, view.y_widget]
+    selectors = [view.x_widget, view.y_widget, view.variable_widget]
     assert [controls.index(widget) for widget in selectors] == [2, 3, 4]
     texts = [str(item.object) for item in controls if isinstance(item, pn.pane.Markdown)]
     assert not any("Display axes" in text for text in texts)
@@ -826,6 +834,7 @@ def test_output_filters_run_by_cardinality_then_title() -> None:
         coords={"a": a, "b": b},
     )
     view = FilterView(dataset, inspect_dataset(dataset))
+    view.filter_flags_widget.value = False
     shown = [name for name in _shown_filter_names(view) if name in view.schema.variables]
     # many: 12 distinct; alpha and zeta: 6 each, tied, so by title; few: 2.
     assert shown == ["many", "alpha", "zeta", "few"]
@@ -860,3 +869,71 @@ def test_plot_title_names_the_x_and_y_variables(dataset: xr.Dataset) -> None:
     assert view._plot.object.opts.get().kwargs["title"] == (
         f"{view._axis_label('drum_angle')} vs {view._axis_label('k_eff')}"
     )
+
+
+def test_selectors_list_inputs_then_outputs_by_cardinality_and_search() -> None:
+    a, b = np.arange(3.0), np.arange(4.0)
+    grid = np.add.outer(a, b)
+    dataset = xr.Dataset(
+        {
+            "few": (("a", "b"), grid % 2),
+            "zeta": (("a", "b"), grid),
+            "alpha": (("a", "b"), grid + 0.5),
+            "many": (("a", "b"), np.arange(12.0).reshape(3, 4)),
+        },
+        coords={"a": a, "b": b},
+    )
+    schema = inspect_dataset(dataset)
+    assert selector_order(schema, ["zeta", "few", "b", "many", "a", "alpha"]) == [
+        "b",
+        "a",
+        "many",
+        "alpha",
+        "zeta",
+        "few",
+    ]
+    view = FilterView(dataset, schema)
+    view.filter_flags_widget.value = False
+    for widget in (view.variable_widget, view.x_widget, view.y_widget):
+        assert widget.searchable
+        names = list(widget.options.values())
+        assert names == selector_order(schema, names)
+    assert list(view.variable_widget.options.values()) == ["a", "b", "many", "alpha", "zeta", "few"]
+
+
+def test_filter_flags_hides_low_cardinality_outputs_everywhere() -> None:
+    a, b = np.arange(3.0), np.arange(4.0)
+    grid = np.add.outer(a, b)
+    dataset = xr.Dataset(
+        {
+            "power": (("a", "b"), grid * 1.5),
+            "margin": (("a", "b"), np.arange(12.0).reshape(3, 4)),
+            "run_flag": (("a", "b"), grid % 2),
+            "single": (("a", "b"), np.where(grid > 2, np.nan, 7.0)),
+        },
+        coords={"a": a, "b": b},
+    )
+    view = FilterView(dataset, inspect_dataset(dataset))
+    assert view.filter_flags_widget.value is True
+    assert view.filter_flags_widget in view._menu
+    flags = {"run_flag", "single"}
+
+    def offered() -> set[str]:
+        return {
+            *view.variable_widget.options.values(),
+            *view.x_widget.options.values(),
+            *view.y_widget.options.values(),
+            *view._filter_widgets,
+        }
+
+    assert not flags & offered()
+    assert "run_flag" not in view._correlation.content
+
+    view.filter_flags_widget.value = False
+    assert flags <= offered()
+    assert "run_flag" in view._correlation.content or "run_flag" in str(
+        view._correlation_title.object
+    )
+
+    view.filter_flags_widget.value = True
+    assert not flags & offered()

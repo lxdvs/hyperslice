@@ -5,7 +5,7 @@ import pytest
 import xarray as xr
 
 from hyperslice.exceptions import DatasetSchemaError
-from hyperslice.schema import cardinality_table, inspect_dataset
+from hyperslice.schema import cardinality_table, inspect_dataset, plot_label
 
 
 def test_schema_metadata_and_irregular_grid(dataset: xr.Dataset) -> None:
@@ -118,3 +118,23 @@ def test_constant_output_is_never_high_cardinality() -> None:
     assert schema.variables["fixed"].cardinality == 1
     assert schema.variables["all_missing"].cardinality == 0
     assert schema.variables["all_missing"].high_cardinality is False
+
+
+def test_plot_label_drops_the_group_and_keeps_written_capitals() -> None:
+    dataset = xr.Dataset(
+        {
+            "heatpipe.Theoretical Max Power (MW)": ("s", [1.0]),
+            "lifetime.BOL k-effective": ("s", [1.0]),
+            "geometry.n_fueled_hexes": ("s", [1.0]),
+            "named.thing": ("s", [1.0], {"long_name": "Given name", "units": "kg"}),
+        },
+        coords={"fuel_hex.hex_pitch": ("s", [1.0]), "plain_input": ("s", [2.0])},
+    )
+    assert (
+        plot_label(dataset, "heatpipe.Theoretical Max Power (MW)") == "Theoretical Max Power (MW)"
+    )
+    assert plot_label(dataset, "lifetime.BOL k-effective") == "BOL k-effective"
+    assert plot_label(dataset, "geometry.n_fueled_hexes") == "N Fueled Hexes"
+    assert plot_label(dataset, "fuel_hex.hex_pitch") == "Hex Pitch"
+    assert plot_label(dataset, "plain_input") == "Plain Input"
+    assert plot_label(dataset, "named.thing") == "Given name [kg]"
