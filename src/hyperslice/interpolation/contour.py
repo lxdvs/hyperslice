@@ -28,34 +28,36 @@ def linear_contour_surface(
     x = np.asarray(data.coords[x_dim].values)
     y = np.asarray(data.coords[y_dim].values)
     if x.dtype.kind not in "iuf" or y.dtype.kind not in "iuf":
-        raise SliceError("Pareto contours require numeric X and Y coordinates.")
+        raise SliceError("Interpolated contours require numeric X and Y coordinates.")
     if len(x) < 2 or len(y) < 2:
-        raise SliceError("Pareto contours require at least 2 coordinate values on each axis.")
+        raise SliceError("Interpolated contours require at least 2 coordinate values on each axis.")
     values = np.asarray(data.transpose(y_dim, x_dim).values, dtype=float)
     if invalid_mask is not None:
         semantic_invalid = np.asarray(invalid_mask.transpose(y_dim, x_dim).values, dtype=bool)
         if semantic_invalid.any():
             raise SliceError(
-                "Pareto contour unavailable: semantically invalid cells cannot "
+                "Interpolated contour unavailable: semantically invalid cells cannot "
                 "be used as interpolation support."
             )
     else:
         semantic_invalid = np.zeros_like(values, dtype=bool)
     finite = np.isfinite(values) & ~semantic_invalid
     if not finite.any():
-        raise SliceError("Pareto contour unavailable: the selected slice has no finite support.")
+        raise SliceError(
+            "Interpolated contour unavailable: the selected slice has no finite support."
+        )
     if np.all(np.diff(x) < 0):
         x = x[::-1]
         values = values[:, ::-1]
         finite = finite[:, ::-1]
     elif not np.all(np.diff(x) > 0):
-        raise SliceError("Pareto contours require a strictly monotonic X coordinate.")
+        raise SliceError("Interpolated contours require a strictly monotonic X coordinate.")
     if np.all(np.diff(y) < 0):
         y = y[::-1]
         values = values[::-1, :]
         finite = finite[::-1, :]
     elif not np.all(np.diff(y) > 0):
-        raise SliceError("Pareto contours require a strictly monotonic Y coordinate.")
+        raise SliceError("Interpolated contours require a strictly monotonic Y coordinate.")
     dense_x = np.linspace(float(x[0]), float(x[-1]), resolution)
     dense_y = np.linspace(float(y[0]), float(y[-1]), resolution)
     query_x, query_y = np.meshgrid(dense_x, dense_y)
@@ -79,7 +81,7 @@ def linear_contour_surface(
             or int(finite.sum()) < 3
         ):
             raise SliceError(
-                "Pareto contour unavailable: incomplete support requires at "
+                "Interpolated contour unavailable: incomplete support requires at "
                 "least 3 finite samples spanning 2 coordinates on each axis."
             )
         interpolator = LinearNDInterpolator(

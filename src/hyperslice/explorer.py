@@ -177,11 +177,10 @@ class Explorer:
         self.plot_type_widget = pn.widgets.Select(
             name="Plot type", options=["heatmap", "filled contour", "contour lines", "image"]
         )
-        self.pareto_value_widget = pn.widgets.FloatSlider(
-            name="Output contour", start=0.0, end=1.0, value=0.5, step=0.01
+        self.contour_levels_widget = pn.widgets.IntSlider(
+            name="Contour levels", start=1, end=30, value=10, step=1
         )
-        self.pareto_widget = pn.widgets.Checkbox(name="Pareto", value=False, width=75)
-        self._syncing_pareto_value = False
+        self.contours_widget = pn.widgets.Checkbox(name="Contours", value=True, width=75)
         self.show_samples_widget = pn.widgets.Checkbox(
             name="Show original sample locations", value=False
         )
@@ -387,19 +386,15 @@ class Explorer:
         self.variable_widget.param.watch(self._on_variable, "value")
         self.x_widget.param.watch(self._on_x, "value")
         self.y_widget.param.watch(self._on_y, "value")
-        watch_settled(self.pareto_value_widget, self._on_pareto_value)
+        watch_settled(self.contour_levels_widget, lambda _event: self._update())
         for widget in (
             self.method_widget,
             self.plot_type_widget,
-            self.pareto_widget,
+            self.contours_widget,
             self.show_samples_widget,
             self.show_invalid_widget,
         ):
             widget.param.watch(lambda _event: self._update(), "value")
-
-    def _on_pareto_value(self, _event: Any) -> None:
-        if not self._syncing_pareto_value:
-            self._update()
 
     def _on_variable(self, _event: Any) -> None:
         dims = self._axis_dimensions()
@@ -593,7 +588,6 @@ class Explorer:
         try:
             result, status = self.current_slice()
             self._current_slice, self._current_status = result, status
-            self._sync_pareto_range(result)
             plot_arguments = {
                 "dataset": self.dataset,
                 "x_dim": self.x_dim,
@@ -604,16 +598,16 @@ class Explorer:
                 "show_samples": self.show_samples_widget.value,
                 "show_invalid": self.show_invalid_widget.value,
             }
-            pareto_error: str | None = None
+            contour_error: str | None = None
             try:
                 plot = build_plot(
                     result,
                     **plot_arguments,
-                    pareto=self.pareto_widget.value,
-                    pareto_value=self.pareto_value_widget.value,
+                    contours=self.contours_widget.value,
+                    contour_levels=self.contour_levels_widget.value,
                 )
             except SliceError as exc:
-                pareto_error = str(exc)
+                contour_error = str(exc)
                 plot = build_plot(result, **plot_arguments)
             self._watch_taps(plot)
             outline = self._selection_outline()
@@ -632,15 +626,15 @@ class Explorer:
                 f"({'interpolated' if self.method_widget.value == 'linear' else 'grid selection'})"
             )
             affected = counts["invalid"] + counts["missing"]
-            self._message.visible = affected > 0 or pareto_error is not None
+            self._message.visible = affected > 0 or contour_error is not None
             messages = []
             if affected:
                 messages.append(
                     f"This slice contains {counts['invalid']} invalid and "
                     f"{counts['missing']} missing cells."
                 )
-            if pareto_error:
-                messages.append(pareto_error)
+            if contour_error:
+                messages.append(contour_error)
             self._message.object = " ".join(messages)
             self._message.alert_type = "warning"
         except Exception as exc:
@@ -648,27 +642,6 @@ class Explorer:
             self._message.object = str(exc)
             self._message.alert_type = "danger"
             self._message.visible = True
-
-    def _sync_pareto_range(self, data: xr.DataArray) -> None:
-        """Keep the output-contour slider within the finite displayed range."""
-        finite = np.asarray(data.values, dtype=float)
-        finite = finite[np.isfinite(finite)]
-        if finite.size == 0:
-            self.pareto_value_widget.disabled = True
-            return
-        low, high = float(finite.min()), float(finite.max())
-        if low == high:
-            high = low + max(abs(low) * 1e-6, 1e-9)
-        previous = float(self.pareto_value_widget.value)
-        self._syncing_pareto_value = True
-        try:
-            self.pareto_value_widget.start = low
-            self.pareto_value_widget.end = high
-            self.pareto_value_widget.step = (high - low) / 200
-            self.pareto_value_widget.value = min(max(previous, low), high)
-            self.pareto_value_widget.disabled = False
-        finally:
-            self._syncing_pareto_value = False
 
     def _csv_download(self) -> Any:
         result, status = self.current_slice()
@@ -699,7 +672,7 @@ class Explorer:
             self.variable_widget,
             pn.Row(self.x_widget, self.y_widget),
             pn.Row(self.method_widget, self.plot_type_widget),
-            pn.Row(self.pareto_value_widget, self.pareto_widget),
+            pn.Row(self.contour_levels_widget, self.contours_widget),
             pn.pane.Markdown("### Fixed coordinates"),
             self._dimension_box,
             self.show_samples_widget,
@@ -753,6 +726,8 @@ class Explorer:
             "selections": {key: scalar(value) for key, value in self.fixed_selections.items()},
             "method": self.method_widget.value,
             "plot_type": self.plot_type_widget.value,
+            "contours": self.contours_widget.value,
+            "contour_levels": self.contour_levels_widget.value,
             "show_samples": self.show_samples_widget.value,
             "show_invalid": self.show_invalid_widget.value,
         }
@@ -775,6 +750,12 @@ class Explorer:
         ):
             if state.get(key) in widget.options:
                 widget.value = state[key]
+        self.contours_widget.value = bool(state.get("contours", True))
+        levels = state.get("contour_levels", self.contour_levels_widget.value)
+        if isinstance(levels, int) and not isinstance(levels, bool):
+            self.contour_levels_widget.value = min(
+                max(levels, self.contour_levels_widget.start), self.contour_levels_widget.end
+            )
         self.show_samples_widget.value = bool(state.get("show_samples", False))
         self.show_invalid_widget.value = bool(state.get("show_invalid", True))
         self._update()

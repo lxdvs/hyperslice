@@ -152,6 +152,8 @@ missing when required support is incomplete.
 
 - Exact, nearest, and strict linear selection of fixed dimensions
 - Heatmap/image, filled contour, and contour-line views with hover and colorbar
+- Interpolated contour lines at automatically chosen output heights, traced on the
+  linear response surface and never bridged across invalid cells
 - Units and long names on axes and values
 - Valid, invalid, and missing sample overlays and counts
 - Filter view opening on the most interesting fields: outputs before inputs,

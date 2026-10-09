@@ -172,7 +172,7 @@ def _save_points_headless(plot: Any, target: Path) -> None:
 
 
 def _save_mesh_headless(plot: Any, target: Path) -> None:
-    """Render the primary QuadMesh."""
+    """Render the primary QuadMesh plus any contour overlays."""
     import holoviews as hv
     import matplotlib.pyplot as plt
 
@@ -187,6 +187,40 @@ def _save_mesh_headless(plot: Any, target: Path) -> None:
     )
     figure, axes = plt.subplots(figsize=(10, 7), constrained_layout=True)
     artist = axes.pcolormesh(x, y, values, shading="auto", cmap="viridis")
+    for contour in plot.traverse(lambda item: item, specs=[hv.Contours]):
+        opts = _bokeh_opts(contour)
+        # NaN rows separate sub-paths, which Matplotlib leaves as gaps.
+        axes.plot(
+            contour.dimension_values(0),
+            contour.dimension_values(1),
+            color=opts.get("color", "white"),
+            linewidth=opts.get("line_width", 1.5),
+            alpha=opts.get("alpha", 1.0),
+        )
+    for labels in plot.traverse(lambda item: item, specs=[hv.Labels]):
+        opts = _bokeh_opts(labels)
+        box = dict(
+            boxstyle="round,pad=0.2",
+            facecolor=opts.get("background_fill_color", "black"),
+            alpha=opts.get("background_fill_alpha", 0.45),
+            edgecolor="none",
+        )
+        for x_text, y_text, text in zip(
+            labels.dimension_values(0),
+            labels.dimension_values(1),
+            labels.dimension_values(2),
+            strict=True,
+        ):
+            axes.text(
+                x_text,
+                y_text,
+                str(text),
+                color=opts.get("text_color", "white"),
+                fontsize=8,
+                ha="center",
+                va="center",
+                bbox=box,
+            )
     axes.set_xlabel(x_dim.label)
     axes.set_ylabel(y_dim.label)
     axes.set_title(str(mesh.opts.get(backend="bokeh", defaults=False).kwargs.get("title", "")))

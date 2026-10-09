@@ -86,37 +86,50 @@ def test_dimension_labels_include_unique_value_counts(dataset: xr.Dataset) -> No
         assert f"({dataset.sizes[dim]} values)" in explorer._dimension_label(dim)
 
 
-def test_pareto_slider_tracks_output_and_draws_supported_contour(
-    dataset: xr.Dataset,
-) -> None:
-    explorer = Explorer(
-        dataset,
-        default_x="drum_angle",
-        default_y="fuel_temperature",
-    )
-    drag(explorer._dimension_widgets["flow_rate"], 10.0)
-    result, _ = explorer.current_slice()
-    finite = result.values[np.isfinite(result.values)]
-    assert explorer.pareto_value_widget.start == pytest.approx(float(finite.min()))
-    assert explorer.pareto_value_widget.end == pytest.approx(float(finite.max()))
+def test_interpolated_contours_toggle_levels_and_state(dataset: xr.Dataset) -> None:
+    complete = dataset.copy(deep=True)
+    complete["status"][:] = 0
+    complete["k_eff"][:] = complete["k_eff"].fillna(1.0)
+    explorer = Explorer(complete, default_variable="k_eff")
+    assert explorer.contours_widget.value
 
-    drag(explorer.pareto_value_widget, float(np.median(finite)))
-    explorer.pareto_widget.value = True
-    assert explorer._plot.object is not None
+    def isolines() -> list[hv.Contours]:
+        return [
+            layer
+            for layer in explorer._plot.object.traverse()
+            if isinstance(layer, hv.Contours) and layer.label == "Interpolated contours"
+        ]
+
+    assert len(isolines()) == 1
     assert "contour unavailable" not in str(explorer._message.object).lower()
+    (lines,) = isolines()
+    default_levels = np.unique(lines.dimension_values(explorer.variable)).size
+    drag(explorer.contour_levels_widget, 2)
+    (lines,) = isolines()
+    assert np.unique(lines.dimension_values(explorer.variable)).size < default_levels
+
+    explorer.contours_widget.value = False
+    assert not isolines()
+
+    state = explorer.get_state()
+    assert state["contours"] is False
+    assert state["contour_levels"] == 2
+    restored = Explorer(complete, default_variable="k_eff")
+    restored.set_state(state)
+    assert restored.get_state() == state
+    assert not restored.contours_widget.value
+    assert restored.contour_levels_widget.value == 2
 
 
-def test_pareto_contour_reports_incomplete_support(dataset: xr.Dataset) -> None:
-    explorer = Explorer(
-        dataset,
-        default_x="drum_angle",
-        default_y="fuel_temperature",
-    )
-    explorer.pareto_widget.value = True
+def test_interpolated_contours_report_invalid_support(dataset: xr.Dataset) -> None:
+    explorer = Explorer(dataset, default_x="drum_angle", default_y="fuel_temperature")
+    assert explorer.contours_widget.value
     assert "semantically invalid cells" in str(explorer._message.object)
+    assert explorer._message.alert_type == "warning"
+    assert explorer._plot.object is not None
 
 
-def test_pareto_contour_draws_with_isolated_missing_grid_point(
+def test_interpolated_contours_draw_with_isolated_missing_grid_point(
     dataset: xr.Dataset,
 ) -> None:
     complete = dataset.copy(deep=True)
@@ -140,7 +153,7 @@ def test_pareto_contour_draws_with_isolated_missing_grid_point(
     drag(explorer._dimension_widgets["pressure"], 2.5)
     drag(explorer._dimension_widgets["flow_rate"], 10.0)
     drag(explorer._dimension_widgets["burnup"], 5.0)
-    explorer.pareto_widget.value = True
+    assert explorer.contours_widget.value
     assert explorer._plot.object is not None
     assert "contour unavailable" not in str(explorer._message.object).lower()
 
